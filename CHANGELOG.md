@@ -2,6 +2,21 @@
 
 Formato: Nuevo / Mejorado / Corregido. Versiones con [versionado semántico](https://semver.org/lang/es/).
 
+## [4.4.0] - 2026-11
+
+### Nuevo
+- **Procesador** en Dispositivos: modelo y microcódigo en uso. En Intel Core 13.ª/14.ª gen de escritorio avisa si falta el arreglo de Intel para la inestabilidad (microcódigo 0x12B o más nuevo) y lleva a la BIOS de tu placa. Revix PC nunca instala la BIOS.
+- Procesadores AMD: muestra si están instalados los drivers del chipset.
+- **Periféricos de cualquier marca** (teclados, mouse, audífonos, cámaras, controles, receptores): nombre real del producto, marca, conexión (USB, Bluetooth o receptor inalámbrico), revisión de firmware y enlace al software oficial (G HUB, Options+, Synapse, NGENUITY, iCUE, GG, Armoury Crate, Wootility).
+- Aviso cuando Windows usa el driver de video básico (falta el de tu tarjeta).
+
+### Mejorado
+- Tarjetas de video NVIDIA, AMD e Intel: versión, fecha y antigüedad del driver, con botón a la herramienta oficial (NVIDIA App, AMD Software o el asistente de Intel). Si ya la tienes instalada, la abre directamente.
+
+### Corregido
+- Los teclados y mouse HyperX nuevos (que usan el código USB de HP) ya se reconocen.
+- Revix PC ya no usa un servicio no oficial de la web de NVIDIA para ver el último driver. Ahora solo se conecta a Microsoft y GitHub.
+
 ## [4.3.0] - 2026-11
 
 ### Nuevo

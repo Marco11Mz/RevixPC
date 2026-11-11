@@ -8,7 +8,7 @@ param([switch]$NoElevate, [switch]$Tray)
 
 $ErrorActionPreference = 'Stop'
 $script:AppName    = 'Revix PC'
-$script:AppVersion = '4.3.0'
+$script:AppVersion = '4.4.0'
 $script:AppId      = 'Marco11.RevixPC'
 $script:GitHubRepo = 'Marco11Mz/RevixPC'
 $script:GitHubUrl  = "https://github.com/$($script:GitHubRepo)"
@@ -130,6 +130,7 @@ namespace RevixPC {
         public bool HasLink { get; set; }
         public bool IsGeneric { get; set; }
         public bool IsNew { get; set; }
+        public string Alert { get; set; }
         public int Priority { get; set; }
     }
     public class HealthRow {
@@ -344,7 +345,7 @@ $script:Config = @{
     RestorePoint = $true; StartWithWindows = $false; CloseToTray = $true
     Notify = $true; AutoCheckHours = 12
     GameMode = $true; GameProcesses = ''
-    TempAlert = $true; GpuPfid = ''
+    TempAlert = $true
     Theme = 'System'; CheckAppUpdates = $true
     WelcomeAccepted = $false; LastVersion = ''; UpdateNotes = ''
     Language = 'Auto'
@@ -702,16 +703,121 @@ $script:JobWUInstall = {
     }
 }
 
-# Dispositivos y sus drivers
+# Dispositivos y sus drivers + procesador, herramientas oficiales y perifericos (objetos con Type)
 $script:JobDeviceScan = {
     $ErrorActionPreference = 'Stop'
     Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop | Where-Object { $_.DeviceName } | ForEach-Object {
         [pscustomobject]@{
+            Type = 'Drv'
             Name = [string]$_.DeviceName; DeviceClass = [string]$_.DeviceClass; Manufacturer = [string]$_.Manufacturer
             Provider = [string]$_.DriverProviderName; Version = [string]$_.DriverVersion; Date = $_.DriverDate
             HardwareId = [string]$_.HardWareID
         }
     }
+    $ErrorActionPreference = 'Continue'
+
+    # Herramientas oficiales instaladas (solo se lee el registro, no se conecta a internet)
+    try {
+        $apps = @(foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
+            Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName }
+        })
+        $tools = @(
+            @{ Key = 'NVIDIA';     Match = '^NVIDIA App';                             Exe = (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVIDIA App\CEF\NVIDIA App.exe') }
+            @{ Key = 'AMD';        Match = '^AMD Software';                           Exe = (Join-Path $env:ProgramFiles 'AMD\CNext\CNext\RadeonSoftware.exe') }
+            @{ Key = 'AMDChipset'; Match = '^AMD Chipset Software';                   Exe = '' }
+            @{ Key = 'Intel';      Match = 'Intel.*Driver (&|and) Support Assistant'; Exe = '' }
+        )
+        foreach ($t in $tools) {
+            $a = $apps | Where-Object { [string]$_.DisplayName -match $t.Match } | Select-Object -First 1
+            if ($a) {
+                $exe = ''; if ($t.Exe -and (Test-Path -LiteralPath $t.Exe)) { $exe = $t.Exe }
+                [pscustomobject]@{ Type = 'Tool'; Key = $t.Key; Name = [string]$a.DisplayName; Version = [string]$a.DisplayVersion; Exe = $exe }
+            }
+        }
+    } catch {}
+
+    # Procesador: modelo, microcodigo en uso y placa madre
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $bb = Get-CimInstance Win32_BaseBoard
+        $mc = ''
+        $raw = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -ErrorAction SilentlyContinue).'Update Revision'
+        if ($raw -is [byte[]] -and $raw.Length -ge 8) {
+            $v = [BitConverter]::ToUInt32($raw, 4); if ($v -eq 0) { $v = [BitConverter]::ToUInt32($raw, 0) }
+            if ($v) { $mc = '0x{0:X}' -f $v }
+        }
+        [pscustomobject]@{ Type = 'Cpu'; Name = ([string]$cpu.Name).Trim(); Manufacturer = [string]$cpu.Manufacturer; Microcode = $mc
+                           BoardMfr = ([string]$bb.Manufacturer).Trim(); BoardProduct = ([string]$bb.Product).Trim() }
+    } catch {}
+
+    # Perifericos USB y Bluetooth (teclados, mouse, audio, camaras, controles)
+    try {
+        $all = @(Get-PnpDevice -PresentOnly -ErrorAction Stop)
+        $byId = @{}; foreach ($p in $all) { $byId[([string]$p.InstanceId).ToUpper()] = $p }
+        function Get-Prop([string]$iid, [string]$key) { try { return (Get-PnpDeviceProperty -InstanceId $iid -KeyName $key -ErrorAction Stop).Data } catch { return $null } }
+        $genericRx = '^\s*$|^(USB|HID)[ -]?(Input|Composite|Keyboard|Device|Audio|compliant|Mouse|PnP)|Composite|compuesto|Input Device|dispositivo de entrada|HID[- ]compliant|compatible con HID|Teclado HID|^Dispositivo|Enumerator|Enumerador'
+        $classes = 'Keyboard', 'Mouse', 'Media', 'Camera', 'Image', 'XnaComposite', 'HIDClass'
+        $groups = [ordered]@{}
+        foreach ($p in $all) {
+            $cls = [string]$p.Class
+            if ($classes -notcontains $cls) { continue }
+            $id = ([string]$p.InstanceId).ToUpper()
+            if ($id -notmatch 'VID[_&]([0-9A-F]{4,8})') { continue }
+            $vid = $matches[1]; $vid = $vid.Substring($vid.Length - 4)
+            if ($id -notmatch 'PID[_&]([0-9A-F]{4})') { continue }
+            $prod = $matches[1]
+            if ($vid -eq '0000') { continue }
+            $key = "$vid|$prod"
+            if (-not $groups.Contains($key)) { $groups[$key] = @{ Vid = $vid; Pid = $prod; Classes = @(); Ids = @(); Names = @(); Bt = $false; Main = ''; MainScore = 99999 } }
+            $g = $groups[$key]
+            $g.Classes += $cls; $g.Ids += $id; $g.Names += [string]$p.FriendlyName
+            # La primera interfaz (MI_00 / COL01) dice que es: un mouse gamer tambien trae una interfaz de teclado para macros
+            if ($cls -eq 'Keyboard' -or $cls -eq 'Mouse') {
+                $sc = 0
+                if ($id -match '&MI_([0-9A-F]{2})') { $sc += 100 * [Convert]::ToInt32($matches[1], 16) }
+                if ($id -match '&COL([0-9A-F]{2})') { $sc += [Convert]::ToInt32($matches[1], 16) }
+                if ($sc -lt $g.MainScore) { $g.MainScore = $sc; $g.Main = $cls }
+            }
+            if ($id -match '^BTH' -or $id -match '\{0000(1124|1812)-') { $g.Bt = $true }
+        }
+        foreach ($g in $groups.Values) {
+            $name = ''; $rev = ''
+            if (-not $g.Bt) {
+                $usb = @($all | Where-Object { ([string]$_.InstanceId).ToUpper() -like "USB\VID_$($g.Vid)&PID_$($g.Pid)*" })
+                $top = @($usb | Where-Object { ([string]$_.InstanceId) -notmatch '&MI_' }) + $usb | Select-Object -First 1
+                if ($top) {
+                    $name = [string](Get-Prop $top.InstanceId 'DEVPKEY_Device_BusReportedDeviceDesc')
+                    foreach ($h in @(Get-Prop $top.InstanceId 'DEVPKEY_Device_HardwareIds')) { if ([string]$h -match 'REV_([0-9A-F]{4})') { $rev = $matches[1]; break } }
+                    if ($name -match $genericRx -and [string]$top.FriendlyName -notmatch $genericRx) { $name = [string]$top.FriendlyName }
+                }
+            } else {
+                foreach ($i in $g.Ids) { if ($i -match 'REV&([0-9A-F]{4})') { $rev = $matches[1]; break } }
+                # Subir por los "padres" hasta el dispositivo Bluetooth, que tiene el nombre real
+                $cur = $g.Ids[0]
+                for ($n = 0; $n -lt 4 -and -not $name; $n++) {
+                    $par = [string](Get-Prop $cur 'DEVPKEY_Device_Parent')
+                    if (-not $par) { break }
+                    $pd = $byId[$par.ToUpper()]
+                    if ($pd -and [string]$pd.FriendlyName -and [string]$pd.FriendlyName -notmatch $genericRx -and [string]$pd.InstanceId -match '^BTH') { $name = [string]$pd.FriendlyName }
+                    $cur = $par
+                }
+            }
+            if (-not $name -or $name -match $genericRx) { $name = [string]($g.Names | Where-Object { $_ -and $_ -notmatch $genericRx } | Select-Object -First 1) }
+            $cl = $g.Classes
+            $kind = 'Other'
+            if ($cl -contains 'Keyboard' -and $cl -contains 'Mouse' -and $name -match 'Receiver|Receptor|Dongle|Unifying|Lightspeed|Wireless') { $kind = 'Receiver' }
+            elseif ($cl -contains 'Mouse' -and $cl -notcontains 'Keyboard') { $kind = 'Mouse' }
+            elseif ($cl -contains 'Keyboard' -and $cl -notcontains 'Mouse') { $kind = 'Keyboard' }
+            elseif ($cl -contains 'Keyboard') { if ($name -match 'Mouse|Rat[oó]n') { $kind = 'Mouse' } elseif ($name -match 'Keyboard|Teclado') { $kind = 'Keyboard' } else { $kind = $g.Main } }
+            elseif ($cl -contains 'Camera' -or $cl -contains 'Image') { $kind = 'Camera' }
+            elseif ($cl -contains 'Media') { $kind = 'Audio' }
+            elseif ($cl -contains 'XnaComposite' -or $name -match 'Controller|Gamepad|Mando|Joystick') { $kind = 'Controller' }
+            # Solo HID sin nombre real: no se muestra (sensores, interfaces internas)
+            if ($kind -eq 'Other' -and (-not $name -or $name -match $genericRx)) { continue }
+            if ($kind -ne 'Receiver' -and $name -match 'Receiver|Receptor|Dongle') { $kind = 'Receiver' }
+            [pscustomobject]@{ Type = 'Periph'; Vid = $g.Vid; Pid = $g.Pid; Name = $name; Kind = $kind; Bluetooth = [bool]$g.Bt; Rev = $rev }
+        }
+    } catch {}
 }
 
 # Salud: seguridad, BIOS, discos y unidades (objetos planos con Type)
@@ -880,29 +986,6 @@ $script:JobStore = {
 $script:JobDefender = {
     Update-MpSignature -ErrorAction Stop
     'OK'
-}
-
-# Ultimo driver de NVIDIA para tu tarjeta (servicio de busqueda de NVIDIA)
-$script:JobNvidia = {
-    param([string]$GpuName, [string]$Pfid)
-    $ErrorActionPreference = 'Stop'
-    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
-    $name = ($GpuName -replace '^NVIDIA\s+', '').Trim()
-    if (-not $Pfid) {
-        $raw = (Invoke-WebRequest -UseBasicParsing -Uri 'https://www.nvidia.com/Download/API/lookupValueSearch.aspx?TypeID=3' -TimeoutSec 30).Content
-        $xml = [xml]$raw
-        $match = @($xml.LookupValueSearch.LookupValues.LookupValue) | Where-Object { ([string]$_.Name).Trim() -eq $name } | Select-Object -First 1
-        if (-not $match) { throw ((L "No se encontró '{0}' en la lista de NVIDIA" "'{0}' was not found in NVIDIA's list") -f $name) }
-        $Pfid = [string]$match.Value
-    }
-    $url = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&pfid=$Pfid&osID=57&languageCode=1033&dch=1&numberOfResults=1"
-    $r = Invoke-RestMethod -Uri $url -TimeoutSec 30
-    if ($r -is [string]) { $r = $r | ConvertFrom-Json }
-    $info = @($r.IDS)[0].downloadInfo
-    if (-not $info -or -not $info.Version) { throw (L 'NVIDIA no devolvió la versión' 'NVIDIA did not return the version') }
-    $details = [string]$info.DetailsURL
-    if (-not $details) { $details = (L 'https://www.nvidia.com/es-la/drivers/' 'https://www.nvidia.com/en-us/drivers/') }
-    [pscustomobject]@{ Pfid = $Pfid; Version = [string]$info.Version; Url = [uri]::UnescapeDataString($details); Date = [string]$info.ReleaseDateTime }
 }
 
 # Programas que arrancan con Windows + cuanto tarda el arranque
@@ -1135,9 +1218,50 @@ $script:Links = @{
     NVIDIA   = (L 'https://www.nvidia.com/es-la/drivers/' 'https://www.nvidia.com/en-us/drivers/')
     AMD      = (L 'https://www.amd.com/es/support/download/drivers.html' 'https://www.amd.com/en/support/download/drivers.html')
     Intel    = (L 'https://www.intel.la/content/www/xl/es/support/detect.html' 'https://www.intel.com/content/www/us/en/support/detect.html')
-    Razer    = 'https://mysupport.razer.com/'
-    Logitech = 'https://support.logi.com/'
-    HyperX   = 'https://hyperx.com/'
+}
+# Marca por el código USB del fabricante (VID). Los "chips" los usan muchas marcas distintas.
+$script:UsbBrands = @{
+    '046D' = 'Logitech'; '1532' = 'Razer'; '0951' = 'HyperX'; '03F0' = 'HP'; '1B1C' = 'Corsair'; '1038' = 'SteelSeries'
+    '0B05' = 'ASUS'; '1E7D' = 'ROCCAT'; '045E' = 'Microsoft'; '054C' = 'Sony'; '057E' = 'Nintendo'; '3434' = 'Keychron'
+    '31E3' = 'Wooting'; '2516' = 'Cooler Master'; '0738' = 'Mad Catz'; '0DB0' = 'MSI'; '1462' = 'MSI'; '413C' = 'Dell'
+    '17EF' = 'Lenovo'; '24AE' = 'Rapoo'; '28DE' = 'Valve'; '1395' = 'EPOS'; '047F' = 'Poly'; '0B0E' = 'Jabra'; '2DC8' = '8BitDo'
+}
+$script:UsbChips = @{
+    '258A' = 'Sino Wealth'; '3554' = 'CompX'; '093A' = 'PixArt'; '04D9' = 'Holtek'; '0C45' = 'Microdia'; '1A86' = 'QinHeng'
+    '0D8C' = 'C-Media'; '25A7' = 'Areson'; '1A2C' = 'China Resource Semico'
+}
+# Marcas que se reconocen por el nombre real del producto (HyperX nuevo usa el VID de HP, ATK/VXE usan chips genéricos, etc.)
+$script:NameBrandRx = '\b(Logitech|Razer|HyperX|Corsair|SteelSeries|ASUS|ROG|ROCCAT|Redragon|ATK|VXE|VGN|Lamzu|Pulsar|Zowie|Glorious|Endgame|Finalmouse|Keychron|Wooting|Akko|Aula|Fantech|Xtrfy|Cooler ?Master|MSI|Turtle ?Beach|Sennheiser|EPOS|JBL|Trust|Genius|Havit|Rapoo|Xbox|DualSense|DualShock|8BitDo|Fifine|Elgato|Moondrop)\b'
+$script:BrandAlias = @{ 'ROG' = 'ASUS'; 'Xbox' = 'Microsoft'; 'DualSense' = 'Sony'; 'DualShock' = 'Sony'; 'CoolerMaster' = 'Cooler Master'; 'TurtleBeach' = 'Turtle Beach' }
+# Software oficial (solo se abre la página; Revix PC no descarga ni instala nada)
+function Get-BrandSoftware([string]$brand, [string]$name) {
+    switch ($brand) {
+        'Logitech' {
+            if ($name -match '\bG\s?\d|\bPRO\b|Lightspeed|Gaming|ASTRO') { return @{ Name = 'Logitech G HUB'; Short = 'G HUB'; Link = 'https://www.logitechg.com/innovation/g-hub.html' } }
+            if ($name -match '\bMX\b|Ergo|Lift|Pebble|Signature|Bolt|Unifying') { return @{ Name = 'Logi Options+'; Short = 'Options+'; Link = 'https://www.logitech.com/software/logi-options-plus.html' } }
+            return @{ Name = (L 'el software de Logitech' 'Logitech software'); Short = 'Logitech'; Link = 'https://support.logi.com/' }
+        }
+        'Razer'       { return @{ Name = 'Razer Synapse'; Short = 'Synapse'; Link = 'https://www.razer.com/synapse-4' } }
+        'HyperX'      { return @{ Name = 'HyperX NGENUITY'; Short = 'NGENUITY'; Link = 'https://hyperx.com/pages/ngenuity' } }
+        'Corsair'     { return @{ Name = 'Corsair iCUE'; Short = 'iCUE'; Link = 'https://www.corsair.com/us/en/explorer/icue/' } }
+        'SteelSeries' { return @{ Name = 'SteelSeries GG'; Short = 'GG'; Link = 'https://steelseries.com/gg' } }
+        'ASUS'        { return @{ Name = 'Armoury Crate'; Short = 'Armoury Crate'; Link = 'https://rog.asus.com/armoury-crate/' } }
+        'Wooting'     { return @{ Name = 'Wootility'; Short = 'Wootility'; Link = 'https://wootility.io/' } }
+    }
+    return $null
+}
+
+# 32.0.15.6636 (Windows) -> 566.36 (NVIDIA)
+function Convert-NvidiaVersion([string]$v) {
+    $digits = ($v -replace '[^\d]', '')
+    if ($digits.Length -lt 5) { return '' }
+    $last = $digits.Substring($digits.Length - 5)
+    return $last.Substring(0, 3) + '.' + $last.Substring(3)
+}
+# Revisión USB (bcdDevice) 0402 -> 4.02
+function Convert-UsbRev([string]$r) {
+    if ($r -notmatch '^[0-9]{4}$') { return $r }
+    return ('{0}.{1}' -f [int]$r.Substring(0, 2), $r.Substring(2))
 }
 # Colores sólidos para las pastillas de estado (texto blanco encima, se leen en tema claro y oscuro)
 $script:C = @{ Green = '#15803D'; Amber = '#B45309'; Red = '#DC2626'; Blue = '#2563EB'; Gray = '#64748B'; Purple = '#7C3AED' }
@@ -1190,17 +1314,6 @@ function Get-WingetCodeText([int]$code) {
     return ((L 'Código {0}' 'Code {0}') -f $hex)
 }
 
-# 32.0.15.6636 (Windows) -> 566.36 (NVIDIA)
-function Convert-NvidiaVersion([string]$v) {
-    $digits = ($v -replace '[^\d]', '')
-    if ($digits.Length -lt 5) { return '' }
-    $last = $digits.Substring($digits.Length - 5)
-    return $last.Substring(0, 3) + '.' + $last.Substring(3)
-}
-function Compare-NvidiaVersion([string]$a, [string]$b) {
-    try { return ([decimal]::Parse($a, [Globalization.CultureInfo]::InvariantCulture)).CompareTo([decimal]::Parse($b, [Globalization.CultureInfo]::InvariantCulture)) } catch { return 0 }
-}
-
 # Nota de 0 a 100 para la pantalla Resumen
 function Get-HealthScore([int]$sec, [int]$wuOther, [int]$prog, [int]$drv, [int]$lvl2, [int]$lvl1) {
     $s = 100
@@ -1218,95 +1331,183 @@ function Get-ScoreLabel([int]$score) {
     return @((L 'Tu PC necesita atención' 'Your PC needs attention'), '#EF4444')
 }
 
-function Get-DeviceVendor($d) {
-    $hw = ([string]$d.HardwareId).ToUpper()
-    $name = [string]$d.Name
-    if ($hw -match 'VID_1532' -or $name -match 'Razer') { return 'Razer' }
-    if ($hw -match 'VID_046D' -or $name -match 'Logitech') { return 'Logitech' }
-    if ($hw -match 'VID_0951' -or $name -match 'HyperX') { return 'HyperX' }
-    return ''
+# Herramienta oficial de cada marca de video: si está instalada se abre, si no, su página oficial
+function Get-GpuTool([string]$vendor, $tools) {
+    $t = @($tools | Where-Object { $_.Key -eq $vendor }) | Select-Object -First 1
+    switch ($vendor) {
+        'NVIDIA' {
+            if ($t -and $t.Exe) { return @{ Name = 'NVIDIA App'; Link = [string]$t.Exe; Action = (L 'Abrir NVIDIA App' 'Open NVIDIA App') } }
+            return @{ Name = 'NVIDIA App'; Link = (L 'https://www.nvidia.com/es-la/software/nvidia-app/' 'https://www.nvidia.com/en-us/software/nvidia-app/'); Action = (L 'Descargar NVIDIA App' 'Get NVIDIA App') }
+        }
+        'AMD' {
+            if ($t -and $t.Exe) { return @{ Name = 'AMD Software'; Link = [string]$t.Exe; Action = (L 'Abrir AMD Software' 'Open AMD Software') } }
+            return @{ Name = 'AMD Software'; Link = $script:Links.AMD; Action = (L 'Abrir AMD' 'Open AMD') }
+        }
+        default { return @{ Name = (L 'el asistente de Intel' 'Intel''s assistant'); Link = $script:Links.Intel; Action = (L 'Abrir Intel' 'Open Intel') } }
+    }
 }
 
-function ConvertTo-DeviceItems($rawDevices, $wuUpdates) {
+function New-DeviceItem([string]$name, [string]$cls, [string]$mfr, [string]$ver, [string]$date, [string]$status, [string]$color, [int]$prio, [string]$note, [string]$link = '', [string]$action = '', [string]$alert = '') {
+    $it = New-Object RevixPC.DeviceItem
+    $it.Name = $name; $it.DeviceClass = $cls; $it.Manufacturer = $mfr; $it.Version = $ver; $it.Date = $date
+    $it.StatusText = $status; $it.StatusColor = $color; $it.Priority = $prio; $it.Note = $note
+    $it.Link = $link; $it.ActionText = $action; $it.HasLink = [bool]$link
+    $it.Alert = $alert; $it.IsNew = [bool]$alert
+    Set-StatusBrush $it
+    return $it
+}
+
+# Procesador (+ chipset AMD)
+function Get-CpuItems($cpu, $tools) {
+    $out = @()
+    if (-not $cpu) { return $out }
+    $name = [string]$cpu.Name
+    $isIntel = ([string]$cpu.Manufacturer -match 'Intel' -or $name -match 'Intel')
+    $isAmd = ([string]$cpu.Manufacturer -match 'AMD' -or $name -match '\bAMD\b')
+    $mfr = ''; if ($isIntel) { $mfr = 'Intel' } elseif ($isAmd) { $mfr = 'AMD' }
+    $mc = [string]$cpu.Microcode
+    $mcVal = 0; if ($mc) { try { $mcVal = [Convert]::ToUInt32($mc.Substring(2), 16) } catch { $mcVal = 0 } }
+    $board = ((([string]$cpu.BoardMfr) + ' ' + ([string]$cpu.BoardProduct)).Trim())
+    $biosLink = ''; if ([string]$cpu.BoardProduct) { $biosLink = 'https://www.google.com/search?q=' + [uri]::EscapeDataString("$board BIOS") }
+    $cls = L 'Procesador' 'Processor'
+    $verTxt = ''; if ($mc) { $verTxt = (L 'Microcódigo {0}' 'Microcode {0}') -f $mc }
+
+    # Intel Core 13.ª/14.ª gen de escritorio: problema de inestabilidad (arreglo: microcódigo 0x12B o más nuevo)
+    $raptor = $isIntel -and ($name -match '\bi(7|9)-1[34]\d{3}(K|KF|KS|F|T)?\b' -or $name -match '\bi5-1[34][5-9]\d{2}(K|KF|F|T)?\b')
+    if ($raptor) {
+        if ($mcVal -gt 0 -and $mcVal -lt 0x12B) {
+            $out += New-DeviceItem $name $cls $mfr $verTxt '' (L 'Actualiza la BIOS' 'Update the BIOS') $script:C.Red 0 `
+                ((L 'Intel publicó un arreglo para la inestabilidad de los Core 13.ª y 14.ª gen (microcódigo 0x12B o más nuevo). Tienes {0}. Instala la BIOS más reciente desde la web de tu placa ({1}).' 'Intel released a fix for the instability of 13th and 14th Gen Core processors (microcode 0x12B or newer). You have {0}. Install the latest BIOS from your motherboard''s website ({1}).') -f $mc, $board) `
+                $biosLink (L 'Buscar BIOS' 'Search BIOS') (L 'Actualiza la BIOS de tu PC' 'Update your PC''s BIOS')
+        } elseif ($mcVal -ge 0x12B) {
+            $out += New-DeviceItem $name $cls $mfr $verTxt '' (L 'Con el arreglo de Intel' 'Has Intel''s fix') $script:C.Green 2 `
+                ((L 'Tu procesador ya tiene el arreglo de Intel para los 13.ª/14.ª gen ({0}; hace falta 0x12B o más nuevo).' 'Your processor already has Intel''s fix for 13th/14th Gen ({0}; 0x12B or newer is needed).') -f $mc)
+        } else {
+            $out += New-DeviceItem $name $cls $mfr $verTxt '' (L 'Revisa la BIOS' 'Check the BIOS') $script:C.Amber 1 `
+                (L 'Intel publicó un arreglo para los Core 13.ª/14.ª gen. No se pudo leer el microcódigo: revisa que tu BIOS sea de septiembre de 2024 o más nueva.' 'Intel released a fix for 13th/14th Gen Core. The microcode could not be read: check that your BIOS is from September 2024 or newer.') `
+                $biosLink (L 'Buscar BIOS' 'Search BIOS')
+        }
+    } elseif ($isIntel) {
+        $out += New-DeviceItem $name $cls $mfr $verTxt '' (L 'Sin avisos' 'No warnings') $script:C.Green 2 `
+            (L 'El microcódigo lo actualizan la BIOS y Windows Update. El asistente de Intel revisa chipset y otros drivers Intel.' 'Microcode is updated by the BIOS and Windows Update. Intel''s assistant checks the chipset and other Intel drivers.') `
+            $script:Links.Intel (L 'Abrir Intel' 'Open Intel')
+    } else {
+        $out += New-DeviceItem $name $cls $mfr $verTxt '' (L 'Sin avisos' 'No warnings') $script:C.Green 2 `
+            (L 'El microcódigo lo actualizan la BIOS y Windows Update.' 'Microcode is updated by the BIOS and Windows Update.')
+    }
+
+    if ($isAmd) {
+        $t = @($tools | Where-Object { $_.Key -eq 'AMDChipset' }) | Select-Object -First 1
+        if ($t) {
+            $out += New-DeviceItem 'AMD Chipset Software' 'Chipset' 'AMD' ([string]$t.Version) '' (L 'Instalado' 'Installed') $script:C.Green 2 `
+                (L 'Se actualiza desde la web de AMD o la de tu placa' 'Updated from AMD''s or your motherboard''s website') $script:Links.AMD (L 'Abrir AMD' 'Open AMD')
+        } else {
+            $out += New-DeviceItem (L 'Drivers del chipset AMD' 'AMD chipset drivers') 'Chipset' 'AMD' '' '' (L 'No instalado' 'Not installed') $script:C.Blue 1 `
+                (L 'Recomendado: el detector de AMD lo encuentra solo. En laptops usa el de la marca de la laptop.' 'Recommended: AMD''s detection tool finds it. On laptops use the one from the laptop maker.') $script:Links.AMD (L 'Abrir AMD' 'Open AMD')
+        }
+    }
+    return $out
+}
+
+# Periféricos de cualquier marca
+function Get-PeripheralItem($p) {
+    $name = ([string]$p.Name).Trim()
+    $brand = ''; $chip = ''
+    if ($name -match $script:NameBrandRx) {
+        $brand = $matches[1]; $k = $brand -replace ' ', ''
+        if ($script:BrandAlias.ContainsKey($k)) { $brand = $script:BrandAlias[$k] } elseif ($script:BrandAlias.ContainsKey($brand)) { $brand = $script:BrandAlias[$brand] }
+    }
+    if (-not $brand -and $script:UsbBrands.ContainsKey([string]$p.Vid)) { $brand = $script:UsbBrands[[string]$p.Vid] }
+    if (-not $brand -and $script:UsbChips.ContainsKey([string]$p.Vid)) { $chip = $script:UsbChips[[string]$p.Vid] }
+
+    $kinds = @{
+        Keyboard = (L 'Teclado' 'Keyboard'); Mouse = 'Mouse'; Audio = 'Audio'; Camera = (L 'Cámara' 'Camera')
+        Controller = (L 'Control' 'Controller'); Receiver = (L 'Receptor' 'Receiver'); Other = (L 'Periférico' 'Peripheral')
+    }
+    $kind = $kinds[[string]$p.Kind]; if (-not $kind) { $kind = $kinds.Other }
+    if (-not $name) { $name = $kind; if ($brand) { $name += " $brand" } else { $name += " (USB $($p.Vid):$($p.Pid))" } }
+    elseif ($brand -and $name -notmatch [regex]::Escape($brand)) { $name = "$brand $name" }
+
+    if ($p.Bluetooth) { $conn = 'Bluetooth' }
+    elseif ([string]$p.Kind -eq 'Receiver' -or $name -match 'Wireless|Inal[aá]mbric|2\.4') { $conn = L 'Inalámbrico (receptor USB)' 'Wireless (USB receiver)' }
+    else { $conn = 'USB' }
+    $ver = ''; if ($p.Rev) { $ver = (L 'rev. {0}' 'rev. {0}') -f (Convert-UsbRev ([string]$p.Rev)) }
+    $mfr = $brand; if (-not $mfr -and $chip) { $mfr = (L 'Chip {0}' '{0} chip') -f $chip }
+
+    $sw = $null; if ($brand) { $sw = Get-BrandSoftware $brand $name }
+    if ($sw) {
+        $note = (L '{0} · Ajustes y firmware con {1}. Actualiza el firmware solo si tienes un problema.' '{0} · Settings and firmware with {1}. Only update firmware if you have a problem.') -f $conn, $sw.Name
+        if ([string]$p.Kind -eq 'Receiver') { $note = (L '{0} · El modelo exacto se ve en {1}.' '{0} · The exact model is shown in {1}.') -f $conn, $sw.Name }
+        return New-DeviceItem $name $kind $mfr $ver '' (L 'Firmware opcional' 'Optional firmware') $script:C.Blue 1 $note $sw.Link ((L 'Abrir {0}' 'Open {0}') -f $sw.Short)
+    }
+    if ($chip) { $note = (L '{0} · Este chip lo usan varias marcas: el software (si tiene) está en la web de la marca de tu equipo.' '{0} · Several brands use this chip: the software (if any) is on your device brand''s website.') -f $conn }
+    elseif ($brand) { $note = (L '{0} · Si tiene software, búscalo en la web oficial de {1}.' '{0} · If it has software, look for it on {1}''s official website.') -f $conn, $brand }
+    else { $note = $conn }
+    return New-DeviceItem $name $kind $mfr $ver '' (L 'Detectado' 'Detected') $script:C.Gray 2 $note
+}
+
+function ConvertTo-DeviceItems($rawDevices, $wuUpdates, $extra) {
     $driverUpdates = @($wuUpdates | Where-Object { $_.IsDriver })
     $list = New-Object 'System.Collections.Generic.List[RevixPC.DeviceItem]'
     $seen = @{}
     $now = Get-Date
-    $sorted = @($rawDevices | Sort-Object @{ Expression = { if ([string]$_.Name -match 'Razer|Logitech|HyperX') { 0 } else { 1 } } })
+    $tools = @(); $periph = @(); $cpu = $null
+    if ($extra) { $tools = @($extra.Tools); $periph = @($extra.Periph); $cpu = $extra.Cpu }
+    $periphKeys = @{}; foreach ($p in $periph) { $periphKeys["$($p.Vid)|$($p.Pid)"] = $true }
 
-    foreach ($d in $sorted) {
-        $vendor = Get-DeviceVendor $d
+    foreach ($i in (Get-CpuItems $cpu $tools)) { $list.Add($i) }
+    foreach ($p in $periph) { $list.Add((Get-PeripheralItem $p)) }
+
+    foreach ($d in $rawDevices) {
         $cls = ([string]$d.DeviceClass).ToUpper()
-        $hwKey = ([string]$d.HardwareId).ToUpper()
-        if ($vendor) {
-            $usbPid = ''
-            if ($hwKey -match 'PID_([0-9A-F]{4})') { $usbPid = $matches[1] }
-            $key = "$vendor|$usbPid|$cls"
-            if ($usbPid) { $key = "$vendor|$usbPid" }
-        } else { $key = "$($d.Name)|$($d.Version)" }
-        if ($seen.ContainsKey($key)) { continue }
-        $seen[$key] = $true
-
-        $it = New-Object RevixPC.DeviceItem
-        $it.Name = [string]$d.Name
-        if ($vendor -and $it.Name -notmatch $vendor) { $it.Name = "$vendor - " + $it.Name }
-        $it.DeviceClass = [string]$d.DeviceClass
-        $it.Manufacturer = [string]$d.Manufacturer
-        $it.Version = [string]$d.Version
-        $date = $null
-        if ($d.Date) { try { $date = [datetime]$d.Date } catch { $date = $null } }
-        if ($date) { $it.Date = $date.ToString((Get-DateFmt)) } else { $it.Date = '' }
-
-        $hw = $hwKey
+        $hw = ([string]$d.HardwareId).ToUpper()
         $match = $driverUpdates | Where-Object {
             $uhw = ([string]$_.DriverHardwareId).ToUpper()
             ($uhw -and $hw -and ($hw -eq $uhw -or $hw.StartsWith($uhw))) -or ($_.DriverModel -and $_.DriverModel -eq $d.Name)
         } | Select-Object -First 1
+        # Lo que ya salió como periférico (con su nombre real) no se repite, salvo que tenga actualización
+        if (-not $match -and $hw -match 'VID[_&]([0-9A-F]{4,8})') {
+            $v = $matches[1]; $v = $v.Substring($v.Length - 4)
+            if ($hw -match 'PID[_&]([0-9A-F]{4})' -and $periphKeys.ContainsKey("$v|$($matches[1])")) { continue }
+        }
+        $key = "$($d.Name)|$($d.Version)"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
 
+        $date = $null
+        if ($d.Date) { try { $date = [datetime]$d.Date } catch { $date = $null } }
+        $dateTxt = ''; if ($date) { $dateTxt = $date.ToString((Get-DateFmt)) }
+        $ver = [string]$d.Version
         $isMs = ([string]$d.Provider) -match '^Microsoft'
         $mfr  = [string]$d.Manufacturer
-        $status = L 'Sin actualizaciones' 'No updates'; $color = $script:C.Green; $note = ''; $link = ''; $action = ''; $prio = 2; $generic = $false; $isNew = $false
+        $status = L 'Sin actualizaciones' 'No updates'; $color = $script:C.Green; $note = ''; $link = ''; $action = ''; $prio = 2; $generic = $false; $alert = ''
 
         if ($match) {
             $status = L 'Hay actualización' 'Update available'; $color = $script:C.Amber; $prio = 0
             $note = L 'Instálala desde la pestaña Windows Update' 'Install it from the Windows Update tab'
         }
-        elseif ($cls -eq 'DISPLAY' -and $mfr -match 'NVIDIA') {
-            $inst = Convert-NvidiaVersion $d.Version
-            $nv = $script:NvidiaInfo
-            if ($nv -and $nv.Latest -and $inst -and (Compare-NvidiaVersion $nv.Latest $inst) -gt 0) {
-                $status = (L 'Driver nuevo: {0}' 'New driver: {0}') -f $nv.Latest; $color = $script:C.Amber; $prio = 0; $isNew = $true
-                $note = (L 'Tienes la {0}. La última de NVIDIA es la {1}' 'You have {0}. The latest from NVIDIA is {1}') -f $inst, $nv.Latest; $link = $nv.Url; $action = L 'Descargar' 'Download'
-            } elseif ($nv -and $nv.Latest -and $inst) {
-                $status = L 'Al día' 'Up to date'; $color = $script:C.Green; $prio = 2
-                $note = (L 'Versión {0} (la más reciente)' 'Version {0} (the latest)') -f $inst
+        elseif ($cls -eq 'DISPLAY' -and [string]$d.Name -match 'Basic Display|Basic Render|b[aá]sico') {
+            $status = L 'Falta el driver de video' 'Graphics driver missing'; $color = $script:C.Red; $prio = 0
+            $note = L 'Windows usa un driver básico (sin aceleración). Instala el de tu tarjeta desde la web de NVIDIA, AMD o Intel.' 'Windows is using a basic driver (no acceleration). Install your card''s driver from NVIDIA, AMD or Intel.'
+            $alert = L 'Falta el driver de video' 'Graphics driver missing'
+        }
+        elseif ($cls -eq 'DISPLAY' -and $mfr -match 'NVIDIA|AMD|Advanced Micro|\bATI\b|Intel') {
+            $gv = 'Intel'; if ($mfr -match 'NVIDIA') { $gv = 'NVIDIA' } elseif ($mfr -match 'AMD|Advanced Micro|\bATI\b') { $gv = 'AMD' }
+            if ($gv -eq 'NVIDIA') { $nvv = Convert-NvidiaVersion $ver; if ($nvv) { $ver = "$nvv ($ver)" } }
+            $tool = Get-GpuTool $gv $tools
+            $link = $tool.Link; $action = $tool.Action
+            $months = -1; if ($date) { $months = [int][Math]::Floor(($now - $date).TotalDays / 30.4) }
+            if ($months -ge 6) {
+                $status = L 'Revisa si hay nuevo' 'Check for a new one'; $color = $script:C.Blue; $prio = 1
+                $note = (L 'Driver de hace {0} meses. Búscalo con {1}.' 'Driver from {0} months ago. Look for a newer one with {1}.') -f $months, $tool.Name
+            } elseif ($months -ge 0) {
+                $status = L 'Reciente' 'Recent'; $color = $script:C.Green; $prio = 2
+                $note = (L 'Driver de hace menos de 6 meses. Para confirmar si hay uno nuevo usa {0}.' 'Driver less than 6 months old. To confirm whether there is a newer one, use {0}.') -f $tool.Name
             } else {
                 $status = L 'Revisar en la web' 'Check online'; $color = $script:C.Blue; $prio = 1
-                $note = L 'Windows Update suele traer versiones antiguas' 'Windows Update often has older versions'
-                if ($inst) { $note = (L 'Tienes la {0}. No se pudo consultar a NVIDIA' 'You have {0}. Could not check with NVIDIA') -f $inst }
-                $link = $script:Links.NVIDIA; $action = L 'Abrir NVIDIA' 'Open NVIDIA'
+                $note = (L 'Revisa si hay uno nuevo con {0}.' 'Check for a newer one with {0}.') -f $tool.Name
             }
-        }
-        elseif ($cls -eq 'DISPLAY' -and $mfr -match 'AMD|Advanced Micro') {
-            $status = L 'Revisar en la web' 'Check online'; $color = $script:C.Blue; $prio = 1
-            $note = L 'Windows Update suele traer versiones antiguas' 'Windows Update often has older versions'; $link = $script:Links.AMD; $action = L 'Abrir AMD' 'Open AMD'
-        }
-        elseif ($cls -eq 'DISPLAY' -and $mfr -match 'Intel') {
-            $status = L 'Revisar en la web' 'Check online'; $color = $script:C.Blue; $prio = 1
-            $note = L 'Asistente de drivers de Intel' 'Intel driver assistant'; $link = $script:Links.Intel; $action = L 'Abrir Intel' 'Open Intel'
-        }
-        elseif ($vendor -eq 'Razer') {
-            $status = L 'Firmware opcional' 'Optional firmware'; $color = $script:C.Blue; $prio = 1
-            $link = $script:Links.Razer; $note = L 'Busca el actualizador de firmware de tu modelo. Actualiza solo si tienes un problema.' 'Look for the firmware updater for your model. Only update if you have a problem.'
-            $action = L 'Abrir Razer' 'Open Razer'
-        }
-        elseif ($vendor -eq 'Logitech') {
-            $status = L 'Firmware opcional' 'Optional firmware'; $color = $script:C.Blue; $prio = 1
-            $note = L 'Se actualiza con el software oficial de Logitech' 'Updated with the official Logitech software'; $link = $script:Links.Logitech; $action = L 'Abrir Logitech' 'Open Logitech'
-        }
-        elseif ($vendor -eq 'HyperX') {
-            $status = L 'Firmware opcional' 'Optional firmware'; $color = $script:C.Blue; $prio = 1
-            $note = L 'Se actualiza con el software oficial de HyperX' 'Updated with the official HyperX software'; $link = $script:Links.HyperX; $action = L 'Abrir HyperX' 'Open HyperX'
+            if ($gv -ne 'NVIDIA') { $note += ' ' + (L 'En laptops, a veces conviene el driver de la marca de la laptop.' 'On laptops, the laptop maker''s driver is sometimes better.') }
         }
         elseif ($isMs) {
             $status = L 'Genérico de Windows' 'Generic Windows driver'; $color = $script:C.Gray; $prio = 3; $generic = $true
@@ -1317,10 +1518,8 @@ function ConvertTo-DeviceItems($rawDevices, $wuUpdates) {
             $note = L 'Solo revísalo si el dispositivo da problemas' 'Only check it if the device has problems'
         }
 
-        $it.StatusText = $status; $it.StatusColor = $color; $it.Note = $note
-        $it.Link = $link; $it.ActionText = $action; $it.HasLink = [bool]$link
-        $it.Priority = $prio; $it.IsGeneric = $generic; $it.IsNew = $isNew
-        Set-StatusBrush $it
+        $it = New-DeviceItem ([string]$d.Name) ([string]$d.DeviceClass) $mfr $ver $dateTxt $status $color $prio $note $link $action $alert
+        $it.IsGeneric = $generic
         $list.Add($it)
     }
     return ,@($list | Sort-Object Priority, Name)
@@ -2353,7 +2552,7 @@ $script:XamlText = @'
                   </StackPanel>
                 </StackPanel>
                 <TextBlock TextWrapping="Wrap" Margin="0,14,0,0" Style="{StaticResource Muted}"
-                           Text="Privacidad: Revix PC no envía tus datos a nadie. Todo se revisa en tu PC. Solo se conecta a internet para consultar a Microsoft (winget, Windows Update y Defender), a NVIDIA (si tienes tarjeta NVIDIA, para ver el último driver) y a GitHub (para buscar versiones nuevas de Revix PC)."/>
+                           Text="Privacidad: Revix PC no envía tus datos a nadie. Todo se revisa en tu PC. Solo se conecta a internet para consultar a Microsoft (winget, Windows Update y Defender) y a GitHub (para buscar versiones nuevas de Revix PC). Los enlaces a marcas solo abren su página oficial."/>
                 <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" Style="{StaticResource Muted}"
                            Text="Revix PC no está afiliado ni respaldado por Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX ni otras marcas que aparezcan en la app. Sus nombres pertenecen a sus dueños y solo se usan para identificar tu hardware y software."/>
                 <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" Style="{StaticResource Muted}"
@@ -2533,7 +2732,7 @@ $script:XamlEn = @{
     'Buscar nueva versión ahora' = 'Check for a new version now'
     'Acerca de' = 'About'
     'Hecho por Marco11  ·  Licencia MIT (gratis y de código abierto)' = 'Made by Marco11  ·  MIT License (free and open source)'
-    'Privacidad: Revix PC no envía tus datos a nadie. Todo se revisa en tu PC. Solo se conecta a internet para consultar a Microsoft (winget, Windows Update y Defender), a NVIDIA (si tienes tarjeta NVIDIA, para ver el último driver) y a GitHub (para buscar versiones nuevas de Revix PC).' = 'Privacy: Revix PC doesn''t send your data to anyone. Everything is checked on your PC. It only connects to the internet to query Microsoft (winget, Windows Update and Defender), NVIDIA (if you have an NVIDIA card, to see the latest driver) and GitHub (to look for new versions of Revix PC).'
+    'Privacidad: Revix PC no envía tus datos a nadie. Todo se revisa en tu PC. Solo se conecta a internet para consultar a Microsoft (winget, Windows Update y Defender) y a GitHub (para buscar versiones nuevas de Revix PC). Los enlaces a marcas solo abren su página oficial.' = 'Privacy: Revix PC doesn''t send your data to anyone. Everything is checked on your PC. It only connects to the internet to query Microsoft (winget, Windows Update and Defender) and GitHub (to look for new versions of Revix PC). Brand links only open their official page.'
     'Revix PC no está afiliado ni respaldado por Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX ni otras marcas que aparezcan en la app. Sus nombres pertenecen a sus dueños y solo se usan para identificar tu hardware y software.' = 'Revix PC is not affiliated with or endorsed by Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX or any other brand shown in the app. Their names belong to their owners and are only used to identify your hardware and software.'
     'Se ofrece ''tal cual'', sin garantía. Úsala bajo tu responsabilidad. Al actualizar programas, winget acepta en tu nombre las licencias de esos programas.' = 'Provided ''as is'', without warranty. Use it at your own risk. When updating programs, winget accepts those programs'' licenses on your behalf.'
     'Ver en GitHub' = 'View on GitHub'
@@ -2555,7 +2754,7 @@ $script:XamlEn = @{
     'Responsabilidad. ' = 'Responsibility. '
     'Revix PC es gratis y de código abierto (licencia MIT). Se ofrece tal cual, sin garantía. Úsala bajo tu responsabilidad y ten copia de tus archivos importantes.' = 'Revix PC is free and open source (MIT license). It is provided as is, without warranty. Use it at your own risk and keep a backup of your important files.'
     'Privacidad. ' = 'Privacy. '
-    'No envía tus datos a nadie. Solo se conecta a Microsoft, a NVIDIA (si tienes tarjeta NVIDIA) y a GitHub (para buscar versiones nuevas).' = 'It doesn''t send your data to anyone. It only connects to Microsoft, NVIDIA (if you have an NVIDIA card) and GitHub (to look for new versions).'
+    'No envía tus datos a nadie. Solo se conecta a Microsoft y a GitHub (para buscar versiones nuevas).' = 'It doesn''t send your data to anyone. It only connects to Microsoft and GitHub (to look for new versions).'
     'Instalación. ' = 'Installation. '
     'Se instalará en Archivos de programa, con accesos directos en el Escritorio y el menú Inicio. Para quitarla: Configuración &gt; Aplicaciones &gt; Revix PC.' = 'It will be installed in Program Files, with shortcuts on the Desktop and in the Start menu. To remove it: Settings &gt; Apps &gt; Revix PC.'
     'Entiendo y acepto' = 'I understand and accept'
@@ -2625,6 +2824,7 @@ try {
     $script:Tasks        = New-Object 'System.Collections.ObjectModel.ObservableCollection[RevixPC.TaskItem]'
     $script:WUUpdates    = @()
     $script:RawDevices   = @()
+    $script:DevExtra     = $null
     $script:DeviceItems  = @()
     $script:HealthRows   = @()
     $script:Scanned      = @{ Programs = $false; WU = $false; Devices = $false; Health = $false; Clean = $false }
@@ -2722,7 +2922,7 @@ try {
                  Text="Revix PC revisa y actualiza tus programas, Windows Update y drivers, y te muestra la salud de tu PC. Antes de empezar, lee esto:"/>
       <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" Foreground="{DynamicResource FgSoft}" LineHeight="20"><Run FontWeight="SemiBold" Foreground="{DynamicResource Fg}" Text="Licencias. "/><Run Text="Para actualizar programas, Revix PC usa winget (de Microsoft), que acepta en tu nombre los acuerdos de licencia de cada programa y de sus fuentes. Si no estás de acuerdo con la licencia de un programa, no lo actualices desde aquí."/></TextBlock>
       <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" Foreground="{DynamicResource FgSoft}" LineHeight="20"><Run FontWeight="SemiBold" Foreground="{DynamicResource Fg}" Text="Responsabilidad. "/><Run Text="Revix PC es gratis y de código abierto (licencia MIT). Se ofrece tal cual, sin garantía. Úsala bajo tu responsabilidad y ten copia de tus archivos importantes."/></TextBlock>
-      <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" Foreground="{DynamicResource FgSoft}" LineHeight="20"><Run FontWeight="SemiBold" Foreground="{DynamicResource Fg}" Text="Privacidad. "/><Run Text="No envía tus datos a nadie. Solo se conecta a Microsoft, a NVIDIA (si tienes tarjeta NVIDIA) y a GitHub (para buscar versiones nuevas)."/></TextBlock>
+      <TextBlock TextWrapping="Wrap" Margin="0,10,0,0" Foreground="{DynamicResource FgSoft}" LineHeight="20"><Run FontWeight="SemiBold" Foreground="{DynamicResource Fg}" Text="Privacidad. "/><Run Text="No envía tus datos a nadie. Solo se conecta a Microsoft y a GitHub (para buscar versiones nuevas)."/></TextBlock>
       <TextBlock x:Name="WInstall" TextWrapping="Wrap" Margin="0,10,0,0" Foreground="{DynamicResource FgSoft}" LineHeight="20"><Run FontWeight="SemiBold" Foreground="{DynamicResource Fg}" Text="Instalación. "/><Run Text="Se instalará en Archivos de programa, con accesos directos en el Escritorio y el menú Inicio. Para quitarla: Configuración &gt; Aplicaciones &gt; Revix PC."/></TextBlock>
       <CheckBox x:Name="WChk" Content="Entiendo y acepto" Margin="0,18,0,0" FontWeight="SemiBold"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
@@ -2823,7 +3023,7 @@ try {
             $script:AutoRound = $false
             $p = @($script:ProgramItems | Where-Object { -not $_.Hidden }).Count
             $w = @($script:WUItems | Where-Object { -not $_.IsDriver }).Count
-            $d = @($script:WUItems | Where-Object { $_.IsDriver }).Count + (Get-NvidiaNewCount)
+            $d = @($script:WUItems | Where-Object { $_.IsDriver }).Count
             $total = $p + $w + $d
             if ($total -gt 0 -and -not $script:Window.IsVisible) {
                 Show-Notify (L 'Hay actualizaciones disponibles' 'Updates available') ((L 'Programas: {0}   ·   Windows: {1}   ·   Drivers: {2}' 'Programs: {0}   ·   Windows: {1}   ·   Drivers: {2}') -f $p, $w, $d)
@@ -2929,7 +3129,7 @@ try {
         if ($script:Scanned.Programs) { $script:NumPrograms.Text = [string]@($script:ProgramItems | Where-Object { -not $_.Hidden }).Count }
         if ($script:Scanned.WU) {
             $script:NumWU.Text      = [string]@($script:WUItems | Where-Object { -not $_.IsDriver }).Count
-            $script:NumDrivers.Text = [string](@($script:WUItems | Where-Object { $_.IsDriver }).Count + (Get-NvidiaNewCount))
+            $script:NumDrivers.Text = [string]@($script:WUItems | Where-Object { $_.IsDriver }).Count
         }
         if ($script:Scanned.Health) { $script:NumHealth.Text = [string]@($script:HealthRows | Where-Object { $_.Level -ge 1 }).Count }
         Update-Home
@@ -2951,7 +3151,7 @@ try {
     }
     function Rebuild-Devices {
         if (-not $script:Scanned.Devices) { return }
-        $script:DeviceItems = ConvertTo-DeviceItems $script:RawDevices $script:WUUpdates
+        $script:DeviceItems = ConvertTo-DeviceItems $script:RawDevices $script:WUUpdates $script:DevExtra
         Refresh-Devices
         Update-Home
     }
@@ -3047,11 +3247,16 @@ try {
         [void](Start-Bg 'Devices' (L 'Revisando dispositivos' 'Checking devices') $script:JobDeviceScan $null {
             param($out, $err)
             if ($err) { Add-History (L 'Revisar dispositivos' 'Check devices') "Error: $err"; return }
-            $script:RawDevices = @($out)
+            $script:RawDevices = @($out | Where-Object { $_.Type -eq 'Drv' })
+            $script:DevExtra = @{
+                Tools  = @($out | Where-Object { $_.Type -eq 'Tool' })
+                Periph = @($out | Where-Object { $_.Type -eq 'Periph' })
+                Cpu    = ($out | Where-Object { $_.Type -eq 'Cpu' } | Select-Object -First 1)
+            }
             $script:Scanned.Devices = $true
             Rebuild-Devices
+            Update-Summary
             Add-History (L 'Revisar dispositivos' 'Check devices') ((L '{0} dispositivos revisados' '{0} devices checked') -f $script:DeviceItems.Count)
-            Check-Nvidia
         })
     }
 
@@ -3316,12 +3521,22 @@ try {
     $script:ChkShowGeneric.Add_Click({ Refresh-Devices })
     $script:BtnDevMgr.Add_Click({ Start-Process 'devmgmt.msc' })
 
+    # Solo se abren programas instalados en Program Files (herramientas oficiales de video)
+    function Test-OfficialExe([string]$path) {
+        if (-not $path -or $path -notmatch '\.exe$') { return $false }
+        try { $full = [IO.Path]::GetFullPath($path) } catch { return $false }
+        return ($full.StartsWith($env:ProgramFiles + '\', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $full -PathType Leaf))
+    }
     $linkHandler = [System.Windows.RoutedEventHandler]{
         param($sender, $e)
         $btn = $e.OriginalSource
         if ($btn -is [System.Windows.Controls.Button] -and $btn.Tag) {
             if ([string]$btn.Tag -eq 'perfmon-rel') { Start-Process 'perfmon.exe' -ArgumentList '/rel' }
             elseif ([string]$btn.Tag -match '^https://') { Start-Process ([string]$btn.Tag) }
+            elseif (Test-OfficialExe ([string]$btn.Tag)) {
+                # Por medio del Explorador se abre como usuario normal (Revix PC corre como administrador)
+                Start-Process 'explorer.exe' -ArgumentList ('"' + [string]$btn.Tag + '"')
+            }
         }
     }
     $script:GridDevices.AddHandler([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $linkHandler)
@@ -3609,32 +3824,6 @@ try {
             $script:AutoRound = $true
             Start-ScanAll
         }
-    }
-
-    # ---------- NVIDIA ----------
-    $script:NvidiaInfo = $null
-    function Get-NvidiaNewCount {
-        foreach ($d in @($script:DeviceItems)) { if ($d.IsNew) { return 1 } }
-        return 0
-    }
-    function Check-Nvidia {
-        $gpu = $script:RawDevices | Where-Object { ([string]$_.DeviceClass).ToUpper() -eq 'DISPLAY' -and [string]$_.Manufacturer -match 'NVIDIA' } | Select-Object -First 1
-        if (-not $gpu) { return }
-        [void](Start-Bg 'Nvidia' (L 'Consultando a NVIDIA' 'Checking with NVIDIA') $script:JobNvidia @([string]$gpu.Name, [string]$script:Config.GpuPfid) {
-            param($out, $err)
-            if ($err) {
-                Write-ErrorLog "nvidia: $err"
-                if ($script:Config.GpuPfid) { $script:Config.GpuPfid = ''; Save-Config }
-                return
-            }
-            $r = $out | Select-Object -First 1
-            if (-not $r) { return }
-            if ($r.Pfid -and $r.Pfid -ne $script:Config.GpuPfid) { $script:Config.GpuPfid = [string]$r.Pfid; Save-Config }
-            $script:NvidiaInfo = @{ Latest = [string]$r.Version; Url = [string]$r.Url }
-            Rebuild-Devices
-            Update-Summary
-            if (Get-NvidiaNewCount) { Add-History (L 'Driver de NVIDIA' 'NVIDIA driver') ((L 'Hay versión nueva: {0}' 'New version available: {0}') -f $r.Version) }
-        })
     }
 
     # ---------- Volver a una versión anterior ----------
@@ -4037,7 +4226,7 @@ try {
         $wuWin = @($script:WUItems | Where-Object { -not $_.IsDriver })
         $sec = @($wuWin | Where-Object { $_.Severity }).Count
         $wuDrv = @($script:WUItems | Where-Object { $_.IsDriver }).Count
-        $nv = Get-NvidiaNewCount
+        $hwAlerts = @($script:DeviceItems | Where-Object { $_.Alert })
         $warn = @($script:HealthRows | Where-Object { $_.Level -ge 1 })
         $lvl2 = @($warn | Where-Object { $_.Level -ge 2 }).Count
         $lvl1 = $warn.Count - $lvl2
@@ -4053,8 +4242,7 @@ try {
             if ($wuWin.Count -eq 0) { $script:SubWU.Text = L 'Todo al día' 'All up to date' }
             elseif ($sec -gt 0) { $script:SubWU.Text = (L '{0} de seguridad' '{0} security') -f $sec }
             else { $script:SubWU.Text = L 'Parches y mejoras' 'Patches and improvements' }
-            if ($nv) { $script:SubDrivers.Text = L 'NVIDIA tiene uno nuevo' 'NVIDIA has a new one' }
-            elseif ($wuDrv) { $script:SubDrivers.Text = L 'En Windows Update' 'In Windows Update' }
+            if ($wuDrv) { $script:SubDrivers.Text = L 'En Windows Update' 'In Windows Update' }
             else { $script:SubDrivers.Text = L 'Todo al día' 'All up to date' }
         }
         if ($script:Scanned.Health) {
@@ -4085,9 +4273,10 @@ try {
             $d = L 'Parches y mejoras de Windows' 'Windows patches and improvements'; if ($sec -gt 0) { $d = (L '{0} de seguridad · pueden pedir reiniciar' '{0} security · may ask for a restart') -f $sec }
             $todo.Add((New-Todo ((L 'Instala {0} actualización(es) de Windows' 'Install {0} Windows update(s)') -f $wuWin.Count) $d 'Windows' '#2F6FEB' 'W' $tView 'tab:2'))
         }
-        if ($nv) {
-            $dv = $script:DeviceItems | Where-Object { $_.IsNew } | Select-Object -First 1
-            $todo.Add((New-Todo ((L 'Driver nuevo para tu {0}' 'New driver for your {0}') -f ($dv.Name -replace '^NVIDIA\s+', '')) $dv.Note 'Driver' '#4D7C0F' 'N' (L 'Descargar' 'Download') $dv.Link))
+        foreach ($dv in @($hwAlerts | Select-Object -First 2)) {
+            $tgt = 'tab:3'; $act = $tView
+            if ([string]$dv.Link -match '^https://') { $tgt = $dv.Link; $act = $dv.ActionText }
+            $todo.Add((New-Todo $dv.Alert $dv.Name 'Hardware' '#B91C1C' 'H' $act $tgt))
         }
         if ($wuDrv -gt 0) { $todo.Add((New-Todo ((L '{0} driver(s) en Windows Update' '{0} driver(s) in Windows Update') -f $wuDrv) (L 'Se instalan desde la sección Windows Update' 'Install them from the Windows Update section') 'Driver' '#0E7490' 'D' $tView 'tab:2')) }
         if ($prog.Count -gt 0) {

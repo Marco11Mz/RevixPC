@@ -56,7 +56,7 @@ Configuración > Aplicaciones > Revix PC > Desinstalar. Te pregunta si quieres b
 
 ## Privacidad
 
-Revix PC **no envía tus datos a nadie**. Todo se revisa en tu PC. Solo se conecta a Microsoft (winget, Windows Update, Defender), a NVIDIA (si tienes tarjeta NVIDIA, para ver el último driver) y a GitHub (para buscar versiones nuevas).
+Revix PC **no envía tus datos a nadie**. Todo se revisa en tu PC. Solo se conecta a Microsoft (winget, Windows Update, Defender) y a GitHub (para buscar versiones nuevas). Los botones de marcas (NVIDIA, AMD, Intel, Logitech…) solo abren su página oficial.
 
 ## Aviso
 
@@ -81,7 +81,7 @@ Revix PC checks and updates your Windows 10/11 PC from one place: programs (with
 
 - **Install:** download `RevixPC-Setup-x.y.z.exe` from [Releases](https://github.com/Marco11Mz/RevixPC/releases/latest) and run it. Portable: `RevixPC-Portable-x.y.z.zip` (open `RevixPC.exe`).
 - **Language:** it follows your Windows language (Spanish if Windows is in Spanish, otherwise English). Change it in *Settings > Appearance > Language*.
-- **Privacy:** it doesn't send your data anywhere. It only connects to Microsoft (winget, Windows Update, Defender), NVIDIA (if you have an NVIDIA card) and GitHub (to check for new versions).
+- **Privacy:** it doesn't send your data anywhere. It only connects to Microsoft (winget, Windows Update, Defender) and GitHub (to check for new versions). Brand buttons (NVIDIA, AMD, Intel, Logitech…) only open their official page.
 - **Notice:** when updating programs, winget accepts their license agreements on your behalf. Provided as is, without warranty. Not affiliated with Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX or other brands mentioned.
 - The installer isn't digitally signed yet, so Windows may show a warning. Only download Revix PC from this page.
 
