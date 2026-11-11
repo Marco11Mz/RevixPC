@@ -1,5 +1,5 @@
 ﻿# ===================================================================
-#  Revix PC 4.2.1  -  Programas, Windows Update, drivers y salud de la PC
+#  Revix PC 4.3.0  -  Programas, Windows Update, drivers y salud de la PC
 #  Windows 10/11 - Windows PowerShell 5.1 (viene con Windows)
 #  Autor: Marco11  ·  Licencia MIT  ·  https://github.com/Marco11Mz/RevixPC
 #  Se abre con RevixPC.exe (lo instala RevixPC-Setup-x.y.z.exe).
@@ -8,7 +8,7 @@ param([switch]$NoElevate, [switch]$Tray)
 
 $ErrorActionPreference = 'Stop'
 $script:AppName    = 'Revix PC'
-$script:AppVersion = '4.2.1'
+$script:AppVersion = '4.3.0'
 $script:AppId      = 'Marco11.RevixPC'
 $script:GitHubRepo = 'Marco11Mz/RevixPC'
 $script:GitHubUrl  = "https://github.com/$($script:GitHubRepo)"
@@ -36,7 +36,9 @@ if ($needSta -or (-not $script:IsAdmin -and -not $NoElevate)) {
     }
     if ($needSta) {
         Add-Type -AssemblyName System.Windows.Forms
-        [void][System.Windows.Forms.MessageBox]::Show('Abre Revix PC con RevixPC.exe.', 'Revix PC')
+        $msg = 'Open Revix PC with RevixPC.exe.'
+        if ([Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'es') { $msg = 'Abre Revix PC con RevixPC.exe.' }
+        [void][System.Windows.Forms.MessageBox]::Show($msg, 'Revix PC')
         exit
     }
 }
@@ -70,6 +72,8 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 namespace RevixPC {
+    // Idioma de la interfaz: true = inglés (lo fija el script al abrir)
+    public static class Lang { public static bool En; }
     [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IPropertyStore {
         [PreserveSig] int GetCount(out uint c);
@@ -93,7 +97,7 @@ namespace RevixPC {
         public bool Skipped { get; set; }
         public bool Auto { get; set; }
         public bool Hidden { get { return Ignored || Skipped; } }
-        public string StateText { get { return Ignored ? "Ignorado" : (Skipped ? "Versión saltada" : (Auto ? "Automático" : "")); } }
+        public string StateText { get { return Lang.En ? (Ignored ? "Ignored" : (Skipped ? "Version skipped" : (Auto ? "Automatic" : ""))) : (Ignored ? "Ignorado" : (Skipped ? "Versión saltada" : (Auto ? "Automático" : ""))); } }
     }
     public class UpdateItem {
         public bool Selected { get; set; }
@@ -125,6 +129,7 @@ namespace RevixPC {
         public string Link { get; set; }
         public bool HasLink { get; set; }
         public bool IsGeneric { get; set; }
+        public bool IsNew { get; set; }
         public int Priority { get; set; }
     }
     public class HealthRow {
@@ -153,6 +158,8 @@ namespace RevixPC {
         string status, color, detail; object brush;
         public string Key { get; set; }
         public string Name { get; set; }
+        public bool Queued { get; set; }
+        public bool Open { get; set; }
         public string StatusText { get { return status; } set { status = value; N("StatusText"); } }
         public string StatusColor { get { return color; } set { color = value; N("StatusColor"); } }
         public string Detail { get { return detail; } set { detail = value; N("Detail"); } }
@@ -340,6 +347,7 @@ $script:Config = @{
     TempAlert = $true; GpuPfid = ''
     Theme = 'System'; CheckAppUpdates = $true
     WelcomeAccepted = $false; LastVersion = ''; UpdateNotes = ''
+    Language = 'Auto'
 }
 $script:IgnoredIds = New-Object 'System.Collections.Generic.List[string]'
 $script:Skipped    = @{}
@@ -394,7 +402,7 @@ function Save-Config {
 
 function Add-History([string]$action, [string]$result) {
     $it = New-Object RevixPC.HistoryItem
-    $it.Date = (Get-Date).ToString('dd/MM/yyyy HH:mm')
+    $it.Date = (Get-Date).ToString((Get-DateFmt) + ' HH:mm')
     $it.Action = $action
     $it.Result = $result
     $script:History.Insert(0, $it)
@@ -452,6 +460,11 @@ function Apply-Theme($target) {
 #  Funciones compartidas (ventana y trabajos en segundo plano)
 # ===================================================================
 $script:InitScriptText = @'
+# Texto en el idioma elegido (también funciona dentro de los trabajos en segundo plano)
+function L([string]$es, [string]$en) { if ($env:REVIXPC_LANG -eq 'en') { return $en }; return $es }
+# Formato de fecha: dd/MM/yyyy en español, yyyy-MM-dd en inglés (se entiende en cualquier país)
+function Get-DateFmt { if ($env:REVIXPC_LANG -eq 'en') { return 'yyyy-MM-dd' }; return 'dd/MM/yyyy' }
+
 function Get-CancelFile { Join-Path $env:TEMP 'RevixPC-cancel.flag' }
 
 function Get-WingetPath {
@@ -515,14 +528,14 @@ function Get-CleanCategories {
     }
     $la = $env:LOCALAPPDATA
     @(
-        [pscustomobject]@{ Key = 'UserTemp';   Name = 'Temporales del usuario';            Default = $true;  Paths = @($env:TEMP);                                         Note = 'Archivos que los programas dejan olvidados' }
-        [pscustomobject]@{ Key = 'WinTemp';    Name = 'Temporales de Windows';             Default = $true;  Paths = @((Join-Path $env:WINDIR 'Temp'));                     Note = 'Carpeta Temp del sistema' }
-        [pscustomobject]@{ Key = 'WUDownload'; Name = 'Descargas de Windows Update';       Default = $true;  Paths = @((Join-Path $env:WINDIR 'SoftwareDistribution\Download')); Note = 'Instaladores de actualizaciones que ya se aplicaron' }
-        [pscustomobject]@{ Key = 'DeliveryOpt';Name = 'Caché de Optimización de entrega';  Default = $true;  Paths = @((Join-Path $env:WINDIR 'ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache')); Note = 'Copias de actualizaciones compartidas' }
-        [pscustomobject]@{ Key = 'WER';        Name = 'Informes de errores de Windows';    Default = $true;  Paths = @((Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportArchive'), (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportQueue'), (Join-Path $la 'CrashDumps')); Note = 'Reportes de cierres inesperados ya enviados' }
-        [pscustomobject]@{ Key = 'Shader';     Name = 'Caché de sombreadores (juegos)';    Default = $false; Paths = @((Join-Path $la 'D3DSCache'), (Join-Path $la 'NVIDIA\DXCache'), (Join-Path $la 'NVIDIA\GLCache'), (Join-Path $la 'AMD\DxCache'), (Join-Path $la 'AMD\DxcCache')); Note = 'Los juegos la vuelven a crear; puede dar tirones la primera partida' }
-        [pscustomobject]@{ Key = 'RecycleBin'; Name = 'Papelera de reciclaje';             Default = $false; Paths = $bins;                                                Note = 'Se borra definitivamente lo que hay en la papelera' }
-        [pscustomobject]@{ Key = 'Components'; Name = 'Componentes viejos de Windows';     Default = $false; Paths = @();                                                  Note = 'Versiones antiguas de archivos del sistema. Tarda varios minutos' }
+        [pscustomobject]@{ Key = 'UserTemp';   Name = (L 'Temporales del usuario' 'User temporary files'); Default = $true;  Paths = @($env:TEMP); Note = (L 'Archivos que los programas dejan olvidados' 'Files that programs leave behind') }
+        [pscustomobject]@{ Key = 'WinTemp';    Name = (L 'Temporales de Windows' 'Windows temporary files'); Default = $true;  Paths = @((Join-Path $env:WINDIR 'Temp')); Note = (L 'Carpeta Temp del sistema' 'System Temp folder') }
+        [pscustomobject]@{ Key = 'WUDownload'; Name = (L 'Descargas de Windows Update' 'Windows Update downloads'); Default = $true;  Paths = @((Join-Path $env:WINDIR 'SoftwareDistribution\Download')); Note = (L 'Instaladores de actualizaciones que ya se aplicaron' 'Installers of updates that were already applied') }
+        [pscustomobject]@{ Key = 'DeliveryOpt';Name = (L 'Caché de Optimización de entrega' 'Delivery Optimization cache'); Default = $true;  Paths = @((Join-Path $env:WINDIR 'ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache')); Note = (L 'Copias de actualizaciones compartidas' 'Shared copies of updates') }
+        [pscustomobject]@{ Key = 'WER';        Name = (L 'Informes de errores de Windows' 'Windows error reports'); Default = $true;  Paths = @((Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportArchive'), (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportQueue'), (Join-Path $la 'CrashDumps')); Note = (L 'Reportes de cierres inesperados ya enviados' 'Crash reports that were already sent') }
+        [pscustomobject]@{ Key = 'Shader';     Name = (L 'Caché de sombreadores (juegos)' 'Shader cache (games)'); Default = $false; Paths = @((Join-Path $la 'D3DSCache'), (Join-Path $la 'NVIDIA\DXCache'), (Join-Path $la 'NVIDIA\GLCache'), (Join-Path $la 'AMD\DxCache'), (Join-Path $la 'AMD\DxcCache')); Note = (L 'Los juegos la vuelven a crear; puede dar tirones la primera partida' 'Games rebuild it; the first match may stutter') }
+        [pscustomobject]@{ Key = 'RecycleBin'; Name = (L 'Papelera de reciclaje' 'Recycle Bin'); Default = $false; Paths = $bins; Note = (L 'Se borra definitivamente lo que hay en la papelera' 'Everything in the Recycle Bin is deleted permanently') }
+        [pscustomobject]@{ Key = 'Components'; Name = (L 'Componentes viejos de Windows' 'Old Windows components'); Default = $false; Paths = @(); Note = (L 'Versiones antiguas de archivos del sistema. Tarda varios minutos' 'Old versions of system files. Takes several minutes') }
     )
 }
 
@@ -545,6 +558,18 @@ function Clear-FolderContent([string]$p) {
 '@
 $script:InitScript = [scriptblock]::Create($script:InitScriptText)
 . $script:InitScript
+
+# ---------- Idioma (inglés / español) ----------
+# "Auto" sigue el idioma de Windows: español si Windows está en español, si no inglés.
+Load-Data
+function Get-SystemLang {
+    try { if ([Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName -eq 'es') { return 'es' } } catch {}
+    return 'en'
+}
+$script:Lang = [string]$script:Config.Language
+if ($script:Lang -ne 'es' -and $script:Lang -ne 'en') { $script:Lang = Get-SystemLang }
+$env:REVIXPC_LANG = $script:Lang
+[RevixPC.Lang]::En = ($script:Lang -eq 'en')
 
 # ===================================================================
 #  Trabajos en segundo plano
@@ -664,7 +689,7 @@ $script:JobWUInstall = {
             $inst = $session.CreateUpdateInstaller(); $inst.Updates = $coll
             $r = $inst.Install()
             $code = $r.GetUpdateResult(0).ResultCode
-            $txt = switch ($code) { 2 { 'Instalada' } 3 { 'Instalada con errores' } 4 { 'Falló' } 5 { 'Cancelada' } default { "Código $code" } }
+            $txt = switch ($code) { 2 { L 'Instalada' 'Installed' } 3 { L 'Instalada con errores' 'Installed with errors' } 4 { L 'Falló' 'Failed' } 5 { L 'Cancelada' 'Cancelled' } default { (L 'Código {0}' 'Code {0}') -f $code } }
             [pscustomobject]@{ Kind = 'done'; Key = $key; Title = [string]$u.Title; Result = $txt; Ok = ($code -eq 2 -or $code -eq 3); Reboot = [bool]$r.RebootRequired }
         } catch {
             [pscustomobject]@{ Kind = 'done'; Key = $key; Title = [string]$u.Title; Result = ('Error: ' + $_.Exception.Message); Ok = $false; Reboot = $false }
@@ -672,7 +697,7 @@ $script:JobWUInstall = {
     }
     foreach ($id in $UpdateIds) {
         if (-not ($list | Where-Object { [string]$_.Identity.UpdateID -eq $id })) {
-            [pscustomobject]@{ Kind = 'done'; Key = $id; Title = ''; Result = 'Ya no estaba disponible'; Ok = $false; Reboot = $false }
+            [pscustomobject]@{ Kind = 'done'; Key = $id; Title = ''; Result = (L 'Ya no estaba disponible' 'No longer available'); Ok = $false; Reboot = $false }
         }
     }
 }
@@ -867,16 +892,16 @@ $script:JobNvidia = {
         $raw = (Invoke-WebRequest -UseBasicParsing -Uri 'https://www.nvidia.com/Download/API/lookupValueSearch.aspx?TypeID=3' -TimeoutSec 30).Content
         $xml = [xml]$raw
         $match = @($xml.LookupValueSearch.LookupValues.LookupValue) | Where-Object { ([string]$_.Name).Trim() -eq $name } | Select-Object -First 1
-        if (-not $match) { throw "No se encontró '$name' en la lista de NVIDIA" }
+        if (-not $match) { throw ((L "No se encontró '{0}' en la lista de NVIDIA" "'{0}' was not found in NVIDIA's list") -f $name) }
         $Pfid = [string]$match.Value
     }
     $url = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php?func=DriverManualLookup&pfid=$Pfid&osID=57&languageCode=1033&dch=1&numberOfResults=1"
     $r = Invoke-RestMethod -Uri $url -TimeoutSec 30
     if ($r -is [string]) { $r = $r | ConvertFrom-Json }
     $info = @($r.IDS)[0].downloadInfo
-    if (-not $info -or -not $info.Version) { throw 'NVIDIA no devolvió la versión' }
+    if (-not $info -or -not $info.Version) { throw (L 'NVIDIA no devolvió la versión' 'NVIDIA did not return the version') }
     $details = [string]$info.DetailsURL
-    if (-not $details) { $details = 'https://www.nvidia.com/es-la/drivers/' }
+    if (-not $details) { $details = (L 'https://www.nvidia.com/es-la/drivers/' 'https://www.nvidia.com/en-us/drivers/') }
     [pscustomobject]@{ Pfid = $Pfid; Version = [string]$info.Version; Url = [uri]::UnescapeDataString($details); Date = [string]$info.ReleaseDateTime }
 }
 
@@ -902,9 +927,9 @@ $script:JobStartup = {
     }
     $base = 'Software\Microsoft\Windows\CurrentVersion'
     $sources = @(
-        @{ Reg = "HKCU:\$base\Run"; Appr = "HKCU:\$base\Explorer\StartupApproved\Run"; Loc = 'Registro (tu usuario)' }
-        @{ Reg = "HKLM:\$base\Run"; Appr = "HKLM:\$base\Explorer\StartupApproved\Run"; Loc = 'Registro (todos)' }
-        @{ Reg = "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"; Appr = "HKLM:\$base\Explorer\StartupApproved\Run32"; Loc = 'Registro (todos, 32 bits)' }
+        @{ Reg = "HKCU:\$base\Run"; Appr = "HKCU:\$base\Explorer\StartupApproved\Run"; Loc = (L 'Registro (tu usuario)' 'Registry (your user)') }
+        @{ Reg = "HKLM:\$base\Run"; Appr = "HKLM:\$base\Explorer\StartupApproved\Run"; Loc = (L 'Registro (todos)' 'Registry (all users)') }
+        @{ Reg = "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"; Appr = "HKLM:\$base\Explorer\StartupApproved\Run32"; Loc = (L 'Registro (todos, 32 bits)' 'Registry (all users, 32-bit)') }
     )
     foreach ($s in $sources) {
         if (-not (Test-Path $s.Reg)) { continue }
@@ -918,8 +943,8 @@ $script:JobStartup = {
         }
     }
     $folders = @(
-        @{ Dir = [Environment]::GetFolderPath('Startup'); Appr = "HKCU:\$base\Explorer\StartupApproved\StartupFolder"; Loc = 'Carpeta Inicio (tu usuario)' }
-        @{ Dir = [Environment]::GetFolderPath('CommonStartup'); Appr = "HKLM:\$base\Explorer\StartupApproved\StartupFolder"; Loc = 'Carpeta Inicio (todos)' }
+        @{ Dir = [Environment]::GetFolderPath('Startup'); Appr = "HKCU:\$base\Explorer\StartupApproved\StartupFolder"; Loc = (L 'Carpeta Inicio (tu usuario)' 'Startup folder (your user)') }
+        @{ Dir = [Environment]::GetFolderPath('CommonStartup'); Appr = "HKLM:\$base\Explorer\StartupApproved\StartupFolder"; Loc = (L 'Carpeta Inicio (todos)' 'Startup folder (all users)') }
     )
     foreach ($f in $folders) {
         if (-not $f.Dir -or -not (Test-Path -LiteralPath $f.Dir)) { continue }
@@ -966,7 +991,7 @@ $script:JobApps = {
             if ($seen.ContainsKey($key)) { continue }
             $seen[$key] = $true
             $date = ''; $d = [string]$k.InstallDate
-            if ($d -match '^\d{8}$') { $date = $d.Substring(6, 2) + '/' + $d.Substring(4, 2) + '/' + $d.Substring(0, 4) }
+            if ($d -match '^\d{8}$') { try { $date = [datetime]::ParseExact($d, 'yyyyMMdd', $null).ToString((Get-DateFmt)) } catch {} }
             [pscustomobject]@{ Name = $n.Trim(); Publisher = [string]$k.Publisher; Version = [string]$k.DisplayVersion
                                SizeMB = [math]::Round([double]$k.EstimatedSize / 1024, 1); InstallDate = $date; Uninstall = $u }
         }
@@ -979,35 +1004,39 @@ $script:JobPcInfo = {
     try {
         $os = Get-CimInstance Win32_OperatingSystem
         $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-        Row 'Windows' 'Edición' $os.Caption
+        $sw = 'Windows'
+        Row $sw (L 'Edición' 'Edition') $os.Caption
         $disp = [string]$cv.DisplayVersion; if (-not $disp) { $disp = [string]$cv.ReleaseId }
-        Row 'Windows' 'Versión' ("$disp (compilación $($cv.CurrentBuild).$($cv.UBR))")
-        Row 'Windows' 'Instalado el' ($os.InstallDate.ToString('dd/MM/yyyy'))
+        Row $sw (L 'Versión' 'Version') ((L '{0} (compilación {1}.{2})' '{0} (build {1}.{2})') -f $disp, $cv.CurrentBuild, $cv.UBR)
+        Row $sw (L 'Instalado el' 'Installed on') ($os.InstallDate.ToString((Get-DateFmt)))
     } catch {}
     try {
         $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-        Row 'Procesador' 'Modelo' ($cpu.Name.Trim())
-        Row 'Procesador' 'Núcleos / hilos' ("$($cpu.NumberOfCores) / $($cpu.NumberOfLogicalProcessors)")
-        Row 'Procesador' 'Velocidad base' ('{0:N2} GHz' -f ($cpu.MaxClockSpeed / 1000))
+        $sc = L 'Procesador' 'Processor'
+        Row $sc (L 'Modelo' 'Model') ($cpu.Name.Trim())
+        Row $sc (L 'Núcleos / hilos' 'Cores / threads') ("$($cpu.NumberOfCores) / $($cpu.NumberOfLogicalProcessors)")
+        Row $sc (L 'Velocidad base' 'Base speed') ('{0:N2} GHz' -f ($cpu.MaxClockSpeed / 1000))
     } catch {}
     try {
         $mods = @(Get-CimInstance Win32_PhysicalMemory)
         $total = ($mods | Measure-Object -Property Capacity -Sum).Sum
         $slots = (Get-CimInstance Win32_PhysicalMemoryArray | Measure-Object -Property MemoryDevices -Sum).Sum
-        Row 'Memoria RAM' 'Total' ('{0:N0} GB' -f ($total / 1GB))
-        Row 'Memoria RAM' 'Módulos' ("$($mods.Count) de $slots ranuras")
+        $sm = L 'Memoria RAM' 'Memory (RAM)'
+        Row $sm 'Total' ('{0:N0} GB' -f ($total / 1GB))
+        Row $sm (L 'Módulos' 'Modules') ((L '{0} de {1} ranuras' '{0} of {1} slots') -f $mods.Count, $slots)
         foreach ($m in $mods) {
             $rated = [int]$m.Speed; $conf = [int]$m.ConfiguredClockSpeed
             $note = ''
-            if ($rated -gt 0 -and $conf -gt 0 -and $conf -lt $rated) { $note = "Trabaja a $conf de $rated MT/s: revisa XMP en la BIOS" }
+            if ($rated -gt 0 -and $conf -gt 0 -and $conf -lt $rated) { $note = (L 'Trabaja a {0} de {1} MT/s: revisa XMP en la BIOS' 'Running at {0} of {1} MT/s: check XMP in the BIOS') -f $conf, $rated }
             $pn = ([string]$m.PartNumber).Trim()
-            Row 'Memoria RAM' ([string]$m.DeviceLocator) ('{0:N0} GB · {1} MT/s · {2} {3}' -f ($m.Capacity / 1GB), $conf, $m.Manufacturer, $pn) $note
+            Row $sm ([string]$m.DeviceLocator) ('{0:N0} GB · {1} MT/s · {2} {3}' -f ($m.Capacity / 1GB), $conf, $m.Manufacturer, $pn) $note
         }
     } catch {}
     try {
         $bb = Get-CimInstance Win32_BaseBoard; $b = Get-CimInstance Win32_BIOS
-        Row 'Placa madre' 'Modelo' ("$($bb.Manufacturer) $($bb.Product)")
-        Row 'Placa madre' 'BIOS' ("$($b.SMBIOSBIOSVersion) ($($b.ReleaseDate.ToString('dd/MM/yyyy')))")
+        $sbrd = L 'Placa madre' 'Motherboard'
+        Row $sbrd (L 'Modelo' 'Model') ("$($bb.Manufacturer) $($bb.Product)")
+        Row $sbrd 'BIOS' ("$($b.SMBIOSBIOSVersion) ($($b.ReleaseDate.ToString((Get-DateFmt))))")
     } catch {}
     try {
         $cls = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
@@ -1020,19 +1049,19 @@ $script:JobPcInfo = {
                 } catch {}
             }
             $txt = [string]$v.Name; if ($vram) { $txt += " · $vram" }
-            Row 'Video' 'Tarjeta' $txt ("Driver " + $v.DriverVersion)
-            if ($v.CurrentHorizontalResolution) { Row 'Video' 'Pantalla' ("$($v.CurrentHorizontalResolution) x $($v.CurrentVerticalResolution) a $($v.CurrentRefreshRate) Hz") }
+            Row (L 'Video' 'Graphics') (L 'Tarjeta' 'Card') $txt ("Driver " + $v.DriverVersion)
+            if ($v.CurrentHorizontalResolution) { Row (L 'Video' 'Graphics') (L 'Pantalla' 'Display') ((L '{0} x {1} a {2} Hz' '{0} x {1} at {2} Hz') -f $v.CurrentHorizontalResolution, $v.CurrentVerticalResolution, $v.CurrentRefreshRate) }
         }
     } catch {}
     try {
         foreach ($d in Get-PhysicalDisk -ErrorAction Stop) {
             $media = [string]$d.MediaType; if ($media -eq 'Unspecified') { $media = '' }
-            Row 'Discos' ([string]$d.FriendlyName) (("$media $($d.BusType)").Trim() + (' · {0:N0} GB' -f ($d.Size / 1GB)))
+            Row (L 'Discos' 'Disks') ([string]$d.FriendlyName) (("$media $($d.BusType)").Trim() + (' · {0:N0} GB' -f ($d.Size / 1GB)))
         }
     } catch {}
     try {
         foreach ($a in Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' }) {
-            Row 'Red' ([string]$a.Name) ("$($a.InterfaceDescription) · $($a.LinkSpeed)")
+            Row (L 'Red' 'Network') ([string]$a.Name) ("$($a.InterfaceDescription) · $($a.LinkSpeed)")
         }
     } catch {}
     try {
@@ -1041,13 +1070,14 @@ $script:JobPcInfo = {
             $design = (Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction SilentlyContinue | Select-Object -First 1).DesignedCapacity
             $full = (Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | Select-Object -First 1).FullChargedCapacity
             $cycles = (Get-CimInstance -Namespace root\wmi -ClassName BatteryCycleCount -ErrorAction SilentlyContinue | Select-Object -First 1).CycleCount
-            Row 'Batería' 'Carga actual' ("$($bat[0].EstimatedChargeRemaining) %")
+            $sbat = L 'Batería' 'Battery'
+            Row $sbat (L 'Carga actual' 'Current charge') ("$($bat[0].EstimatedChargeRemaining) %")
             if ($design -and $full) {
                 $pct = [math]::Round(100 * $full / $design)
-                $note = ''; if ($pct -lt 60) { $note = 'Batería gastada: conviene cambiarla' } elseif ($pct -lt 80) { $note = 'Desgaste normal por uso' }
-                Row 'Batería' 'Salud' ("$pct % ({0:N1} de {1:N1} Wh)" -f ($full / 1000), ($design / 1000)) $note
+                $note = ''; if ($pct -lt 60) { $note = L 'Batería gastada: conviene cambiarla' 'Worn battery: consider replacing it' } elseif ($pct -lt 80) { $note = L 'Desgaste normal por uso' 'Normal wear from use' }
+                Row $sbat (L 'Salud' 'Health') ((L '{0} % ({1:N1} de {2:N1} Wh)' '{0} % ({1:N1} of {2:N1} Wh)') -f $pct, ($full / 1000), ($design / 1000)) $note
             }
-            if ($cycles) { Row 'Batería' 'Ciclos de carga' $cycles }
+            if ($cycles) { Row $sbat (L 'Ciclos de carga' 'Charge cycles') $cycles }
         }
     } catch {}
 }
@@ -1088,8 +1118,8 @@ $script:JobCheckAppUpdate = {
     $h = @{ 'User-Agent' = 'RevixPC'; 'Accept' = 'application/vnd.github+json' }
     try { $r = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $h -TimeoutSec 20 }
     catch {
-        if ($_.Exception.Message -match '404') { throw 'Todavía no hay versiones publicadas en GitHub.' }
-        throw "No se pudo conectar con GitHub: $($_.Exception.Message)"
+        if ($_.Exception.Message -match '404') { throw (L 'Todavía no hay versiones publicadas en GitHub.' 'There are no versions published on GitHub yet.') }
+        throw ((L 'No se pudo conectar con GitHub: {0}' 'Could not connect to GitHub: {0}') -f $_.Exception.Message)
     }
     # Desde la 4.2.1 se actualiza con el instalador: RevixPC-Setup-x.y.z.exe
     $asset = @($r.assets) | Where-Object { [string]$_.name -match '^RevixPC-Setup-[\d.]+\.exe$' } | Select-Object -First 1
@@ -1102,9 +1132,9 @@ $script:JobCheckAppUpdate = {
 #  Logica: clasificar actualizaciones, dispositivos y salud
 # ===================================================================
 $script:Links = @{
-    NVIDIA   = 'https://www.nvidia.com/es-la/drivers/'
-    AMD      = 'https://www.amd.com/es/support/download/drivers.html'
-    Intel    = 'https://www.intel.la/content/www/xl/es/support/detect.html'
+    NVIDIA   = (L 'https://www.nvidia.com/es-la/drivers/' 'https://www.nvidia.com/en-us/drivers/')
+    AMD      = (L 'https://www.amd.com/es/support/download/drivers.html' 'https://www.amd.com/en/support/download/drivers.html')
+    Intel    = (L 'https://www.intel.la/content/www/xl/es/support/detect.html' 'https://www.intel.com/content/www/us/en/support/detect.html')
     Razer    = 'https://mysupport.razer.com/'
     Logitech = 'https://support.logi.com/'
     HyperX   = 'https://hyperx.com/'
@@ -1127,21 +1157,21 @@ function Set-StatusBrush($obj) {
 
 function Get-UpdateKind($u) {
     if ($u.IsDriver) { return 'Driver' }
-    if ($u.Severity) { return 'Seguridad' }
+    if ($u.Severity) { return (L 'Seguridad' 'Security') }
     $t = [string]$u.Title
-    if ($t -match 'acumulativa|Cumulative') { return 'Acumulativa' }
+    if ($t -match 'acumulativa|Cumulative') { return (L 'Acumulativa' 'Cumulative') }
     if ($t -match 'Defender|inteligencia de seguridad|Security Intelligence|antimalware') { return 'Defender' }
     if ($t -match '\.NET') { return '.NET' }
     if ($t -match 'Office|Microsoft 365') { return 'Office' }
-    return 'Otra'
+    return (L 'Otra' 'Other')
 }
 
 function Get-SeverityText([string]$s) {
     switch ($s) {
-        'Critical'  { return 'Crítica' }
-        'Important' { return 'Importante' }
-        'Moderate'  { return 'Moderada' }
-        'Low'       { return 'Baja' }
+        'Critical'  { return (L 'Crítica' 'Critical') }
+        'Important' { return (L 'Importante' 'Important') }
+        'Moderate'  { return (L 'Moderada' 'Moderate') }
+        'Low'       { return (L 'Baja' 'Low') }
         default     { return $s }
     }
 }
@@ -1156,8 +1186,8 @@ function Format-Bytes([double]$b) {
 
 function Get-WingetCodeText([int]$code) {
     $hex = '0x{0:X8}' -f $code
-    if ($hex -eq '0x8A15002B') { return 'No hay actualización aplicable para esta instalación' }
-    return "Código $hex"
+    if ($hex -eq '0x8A15002B') { return (L 'No hay actualización aplicable para esta instalación' 'No applicable update for this installation') }
+    return ((L 'Código {0}' 'Code {0}') -f $hex)
 }
 
 # 32.0.15.6636 (Windows) -> 566.36 (NVIDIA)
@@ -1183,9 +1213,9 @@ function Get-HealthScore([int]$sec, [int]$wuOther, [int]$prog, [int]$drv, [int]$
     return [int][Math]::Max(0, [Math]::Min(100, $s))
 }
 function Get-ScoreLabel([int]$score) {
-    if ($score -ge 85) { return @('Tu PC está en buen estado', '#22C55E') }
-    if ($score -ge 60) { return @('Tu PC necesita algunas actualizaciones', '#F59E0B') }
-    return @('Tu PC necesita atención', '#EF4444')
+    if ($score -ge 85) { return @((L 'Tu PC está en buen estado' 'Your PC is in good shape'), '#22C55E') }
+    if ($score -ge 60) { return @((L 'Tu PC necesita algunas actualizaciones' 'Your PC needs a few updates'), '#F59E0B') }
+    return @((L 'Tu PC necesita atención' 'Your PC needs attention'), '#EF4444')
 }
 
 function Get-DeviceVendor($d) {
@@ -1225,7 +1255,7 @@ function ConvertTo-DeviceItems($rawDevices, $wuUpdates) {
         $it.Version = [string]$d.Version
         $date = $null
         if ($d.Date) { try { $date = [datetime]$d.Date } catch { $date = $null } }
-        if ($date) { $it.Date = $date.ToString('dd/MM/yyyy') } else { $it.Date = '' }
+        if ($date) { $it.Date = $date.ToString((Get-DateFmt)) } else { $it.Date = '' }
 
         $hw = $hwKey
         $match = $driverUpdates | Where-Object {
@@ -1235,61 +1265,61 @@ function ConvertTo-DeviceItems($rawDevices, $wuUpdates) {
 
         $isMs = ([string]$d.Provider) -match '^Microsoft'
         $mfr  = [string]$d.Manufacturer
-        $status = 'Sin actualizaciones'; $color = $script:C.Green; $note = ''; $link = ''; $action = ''; $prio = 2; $generic = $false
+        $status = L 'Sin actualizaciones' 'No updates'; $color = $script:C.Green; $note = ''; $link = ''; $action = ''; $prio = 2; $generic = $false; $isNew = $false
 
         if ($match) {
-            $status = 'Hay actualización'; $color = $script:C.Amber; $prio = 0
-            $note = 'Instálala desde la pestaña Windows Update'
+            $status = L 'Hay actualización' 'Update available'; $color = $script:C.Amber; $prio = 0
+            $note = L 'Instálala desde la pestaña Windows Update' 'Install it from the Windows Update tab'
         }
         elseif ($cls -eq 'DISPLAY' -and $mfr -match 'NVIDIA') {
             $inst = Convert-NvidiaVersion $d.Version
             $nv = $script:NvidiaInfo
             if ($nv -and $nv.Latest -and $inst -and (Compare-NvidiaVersion $nv.Latest $inst) -gt 0) {
-                $status = "Driver nuevo: $($nv.Latest)"; $color = $script:C.Amber; $prio = 0
-                $note = "Tienes la $inst. La última de NVIDIA es la $($nv.Latest)"; $link = $nv.Url; $action = 'Descargar'
+                $status = (L 'Driver nuevo: {0}' 'New driver: {0}') -f $nv.Latest; $color = $script:C.Amber; $prio = 0; $isNew = $true
+                $note = (L 'Tienes la {0}. La última de NVIDIA es la {1}' 'You have {0}. The latest from NVIDIA is {1}') -f $inst, $nv.Latest; $link = $nv.Url; $action = L 'Descargar' 'Download'
             } elseif ($nv -and $nv.Latest -and $inst) {
-                $status = 'Al día'; $color = $script:C.Green; $prio = 2
-                $note = "Versión $inst (la más reciente)"
+                $status = L 'Al día' 'Up to date'; $color = $script:C.Green; $prio = 2
+                $note = (L 'Versión {0} (la más reciente)' 'Version {0} (the latest)') -f $inst
             } else {
-                $status = 'Revisar en la web'; $color = $script:C.Blue; $prio = 1
-                $note = 'Windows Update suele traer versiones antiguas'
-                if ($inst) { $note = "Tienes la $inst. No se pudo consultar a NVIDIA" }
-                $link = $script:Links.NVIDIA; $action = 'Abrir NVIDIA'
+                $status = L 'Revisar en la web' 'Check online'; $color = $script:C.Blue; $prio = 1
+                $note = L 'Windows Update suele traer versiones antiguas' 'Windows Update often has older versions'
+                if ($inst) { $note = (L 'Tienes la {0}. No se pudo consultar a NVIDIA' 'You have {0}. Could not check with NVIDIA') -f $inst }
+                $link = $script:Links.NVIDIA; $action = L 'Abrir NVIDIA' 'Open NVIDIA'
             }
         }
         elseif ($cls -eq 'DISPLAY' -and $mfr -match 'AMD|Advanced Micro') {
-            $status = 'Revisar en la web'; $color = $script:C.Blue; $prio = 1
-            $note = 'Windows Update suele traer versiones antiguas'; $link = $script:Links.AMD; $action = 'Abrir AMD'
+            $status = L 'Revisar en la web' 'Check online'; $color = $script:C.Blue; $prio = 1
+            $note = L 'Windows Update suele traer versiones antiguas' 'Windows Update often has older versions'; $link = $script:Links.AMD; $action = L 'Abrir AMD' 'Open AMD'
         }
         elseif ($cls -eq 'DISPLAY' -and $mfr -match 'Intel') {
-            $status = 'Revisar en la web'; $color = $script:C.Blue; $prio = 1
-            $note = 'Asistente de drivers de Intel'; $link = $script:Links.Intel; $action = 'Abrir Intel'
+            $status = L 'Revisar en la web' 'Check online'; $color = $script:C.Blue; $prio = 1
+            $note = L 'Asistente de drivers de Intel' 'Intel driver assistant'; $link = $script:Links.Intel; $action = L 'Abrir Intel' 'Open Intel'
         }
         elseif ($vendor -eq 'Razer') {
-            $status = 'Firmware opcional'; $color = $script:C.Blue; $prio = 1
-            $link = $script:Links.Razer; $note = 'Busca el actualizador de firmware de tu modelo. Actualiza solo si tienes un problema.'
-            $action = 'Abrir Razer'
+            $status = L 'Firmware opcional' 'Optional firmware'; $color = $script:C.Blue; $prio = 1
+            $link = $script:Links.Razer; $note = L 'Busca el actualizador de firmware de tu modelo. Actualiza solo si tienes un problema.' 'Look for the firmware updater for your model. Only update if you have a problem.'
+            $action = L 'Abrir Razer' 'Open Razer'
         }
         elseif ($vendor -eq 'Logitech') {
-            $status = 'Firmware opcional'; $color = $script:C.Blue; $prio = 1
-            $note = 'Se actualiza con el software oficial de Logitech'; $link = $script:Links.Logitech; $action = 'Abrir Logitech'
+            $status = L 'Firmware opcional' 'Optional firmware'; $color = $script:C.Blue; $prio = 1
+            $note = L 'Se actualiza con el software oficial de Logitech' 'Updated with the official Logitech software'; $link = $script:Links.Logitech; $action = L 'Abrir Logitech' 'Open Logitech'
         }
         elseif ($vendor -eq 'HyperX') {
-            $status = 'Firmware opcional'; $color = $script:C.Blue; $prio = 1
-            $note = 'Se actualiza con el software oficial de HyperX'; $link = $script:Links.HyperX; $action = 'Abrir HyperX'
+            $status = L 'Firmware opcional' 'Optional firmware'; $color = $script:C.Blue; $prio = 1
+            $note = L 'Se actualiza con el software oficial de HyperX' 'Updated with the official HyperX software'; $link = $script:Links.HyperX; $action = L 'Abrir HyperX' 'Open HyperX'
         }
         elseif ($isMs) {
-            $status = 'Genérico de Windows'; $color = $script:C.Gray; $prio = 3; $generic = $true
-            $note = 'Viene con Windows, no necesita nada'
+            $status = L 'Genérico de Windows' 'Generic Windows driver'; $color = $script:C.Gray; $prio = 3; $generic = $true
+            $note = L 'Viene con Windows, no necesita nada' 'Comes with Windows, nothing to do'
         }
         elseif ($date -and $date.Year -ge 2010 -and $date -lt $now.AddYears(-3)) {
-            $status = 'Driver antiguo'; $color = $script:C.Purple; $prio = 2
-            $note = 'Solo revísalo si el dispositivo da problemas'
+            $status = L 'Driver antiguo' 'Old driver'; $color = $script:C.Purple; $prio = 2
+            $note = L 'Solo revísalo si el dispositivo da problemas' 'Only check it if the device has problems'
         }
 
         $it.StatusText = $status; $it.StatusColor = $color; $it.Note = $note
         $it.Link = $link; $it.ActionText = $action; $it.HasLink = [bool]$link
-        $it.Priority = $prio; $it.IsGeneric = $generic
+        $it.Priority = $prio; $it.IsGeneric = $generic; $it.IsNew = $isNew
         Set-StatusBrush $it
         $list.Add($it)
     }
@@ -1306,15 +1336,17 @@ function New-HealthRow([string]$section, [string]$item, [string]$value, [string]
 
 function Get-DaysAgoText([datetime]$d) {
     $days = [int]((Get-Date) - $d).TotalDays
-    if ($days -le 0) { return 'hoy' }
-    if ($days -eq 1) { return 'ayer' }
-    return "hace $days días"
+    if ($days -le 0) { return (L 'hoy' 'today') }
+    if ($days -eq 1) { return (L 'ayer' 'yesterday') }
+    return ((L 'hace {0} días' '{0} days ago') -f $days)
 }
 
 # Level: 0 = bien, 1 = aviso, 2 = problema
 function ConvertTo-HealthRows($out) {
     $rows = New-Object 'System.Collections.Generic.List[RevixPC.HealthRow]'
     $C = $script:C
+    $secSec = L 'Seguridad' 'Security'; $secSys = L 'Sistema' 'System'; $secDisk = L 'Discos' 'Disks'; $secStab = L 'Estabilidad' 'Stability'
+    $tOn = L 'Activo' 'Active'; $tOff = L 'Apagado' 'Off'; $tGood = L 'Bien' 'Good'; $tCheck = L 'Revisar' 'Check'
     $now = Get-Date
     $info = $out | Where-Object { $_.Type -eq 'Info' } | Select-Object -First 1
     $def  = $out | Where-Object { $_.Type -eq 'Defender' } | Select-Object -First 1
@@ -1328,115 +1360,115 @@ function ConvertTo-HealthRows($out) {
         $isMs = $a.Name -match 'Defender'
         if ($on -and -not $isMs) { $activeThird = $true }
         if ($isMs -and -not $on -and @($avs | Where-Object { $_.Name -notmatch 'Defender' }).Count -gt 0) {
-            $rows.Add((New-HealthRow 'Seguridad' "Antivirus: $($a.Name)" 'En espera (otro antivirus está activo)' 'Normal' $C.Gray 0)); continue
+            $rows.Add((New-HealthRow $secSec "Antivirus: $($a.Name)" (L 'En espera (otro antivirus está activo)' 'On standby (another antivirus is active)') (L 'Normal' 'Normal') $C.Gray 0)); continue
         }
-        if ($on) { $rows.Add((New-HealthRow 'Seguridad' "Antivirus: $($a.Name)" 'Protegiendo' 'Activo' $C.Green 0)) }
-        else     { $rows.Add((New-HealthRow 'Seguridad' "Antivirus: $($a.Name)" 'No está protegiendo' 'Apagado' $C.Red 2)) }
+        if ($on) { $rows.Add((New-HealthRow $secSec "Antivirus: $($a.Name)" (L 'Protegiendo' 'Protecting') $tOn $C.Green 0)) }
+        else     { $rows.Add((New-HealthRow $secSec "Antivirus: $($a.Name)" (L 'No está protegiendo' 'Not protecting') $tOff $C.Red 2)) }
     }
     if ($def -and -not $activeThird) {
         if ($avs.Count -eq 0) {
-            if ($def.On) { $rows.Add((New-HealthRow 'Seguridad' 'Antivirus: Microsoft Defender' 'Protegiendo' 'Activo' $C.Green 0)) }
-            else { $rows.Add((New-HealthRow 'Seguridad' 'Antivirus: Microsoft Defender' 'No está protegiendo' 'Apagado' $C.Red 2)) }
+            if ($def.On) { $rows.Add((New-HealthRow $secSec 'Antivirus: Microsoft Defender' (L 'Protegiendo' 'Protecting') $tOn $C.Green 0)) }
+            else { $rows.Add((New-HealthRow $secSec 'Antivirus: Microsoft Defender' (L 'No está protegiendo' 'Not protecting') $tOff $C.Red 2)) }
         }
-        if ($def.RealTime) { $rows.Add((New-HealthRow 'Seguridad' 'Protección en tiempo real' 'Encendida' 'Activo' $C.Green 0)) }
-        else { $rows.Add((New-HealthRow 'Seguridad' 'Protección en tiempo real' 'Apagada' 'Revisar' $C.Red 2)) }
+        if ($def.RealTime) { $rows.Add((New-HealthRow $secSec (L 'Protección en tiempo real' 'Real-time protection') (L 'Encendida' 'On') $tOn $C.Green 0)) }
+        else { $rows.Add((New-HealthRow $secSec (L 'Protección en tiempo real' 'Real-time protection') (L 'Apagada' 'Off') $tCheck $C.Red 2)) }
         if ($def.SigDate) {
             $sd = [datetime]$def.SigDate; $age = ($now - $sd).TotalDays
-            $txt = $sd.ToString('dd/MM/yyyy HH:mm') + ' (' + (Get-DaysAgoText $sd) + ')'
-            if ($age -le 3) { $rows.Add((New-HealthRow 'Seguridad' 'Firmas del antivirus' $txt 'Al día' $C.Green 0)) }
-            elseif ($age -le 7) { $rows.Add((New-HealthRow 'Seguridad' 'Firmas del antivirus' $txt 'Algo antiguas' $C.Amber 1)) }
-            else { $rows.Add((New-HealthRow 'Seguridad' 'Firmas del antivirus' $txt 'Desactualizadas' $C.Red 2)) }
+            $txt = $sd.ToString((Get-DateFmt) + ' HH:mm') + ' (' + (Get-DaysAgoText $sd) + ')'
+            if ($age -le 3) { $rows.Add((New-HealthRow $secSec (L 'Firmas del antivirus' 'Antivirus signatures') $txt (L 'Al día' 'Up to date') $C.Green 0)) }
+            elseif ($age -le 7) { $rows.Add((New-HealthRow $secSec (L 'Firmas del antivirus' 'Antivirus signatures') $txt (L 'Algo antiguas' 'A bit old') $C.Amber 1)) }
+            else { $rows.Add((New-HealthRow $secSec (L 'Firmas del antivirus' 'Antivirus signatures') $txt (L 'Desactualizadas' 'Outdated') $C.Red 2)) }
         }
     }
-    $fwNames = @{ Domain = 'Dominio'; Private = 'Privada'; Public = 'Pública' }
+    $fwNames = @{ Domain = (L 'Dominio' 'Domain'); Private = (L 'Privada' 'Private'); Public = (L 'Pública' 'Public') }
     foreach ($f in $fws) {
         $n = $fwNames[[string]$f.Name]; if (-not $n) { $n = $f.Name }
-        if ($f.Enabled) { $rows.Add((New-HealthRow 'Seguridad' "Firewall (red $n)" 'Encendido' 'Activo' $C.Green 0)) }
-        else { $rows.Add((New-HealthRow 'Seguridad' "Firewall (red $n)" 'Apagado' 'Revisar' $C.Amber 1)) }
+        if ($f.Enabled) { $rows.Add((New-HealthRow $secSec ((L 'Firewall (red {0})' 'Firewall ({0} network)') -f $n) (L 'Encendido' 'On') $tOn $C.Green 0)) }
+        else { $rows.Add((New-HealthRow $secSec ((L 'Firewall (red {0})' 'Firewall ({0} network)') -f $n) $tOff $tCheck $C.Amber 1)) }
     }
 
     # --- Sistema ---
     if ($info) {
-        if ($info.OS) { $rows.Add((New-HealthRow 'Sistema' 'Windows' $info.OS '' $C.Gray 0)) }
+        if ($info.OS) { $rows.Add((New-HealthRow $secSys 'Windows' $info.OS '' $C.Gray 0)) }
         if ($info.LastWU) {
             $lw = [datetime]$info.LastWU
-            $txt = $lw.ToString('dd/MM/yyyy') + ' (' + (Get-DaysAgoText $lw) + ')'
-            if (($now - $lw).TotalDays -le 40) { $rows.Add((New-HealthRow 'Sistema' 'Última actualización de Windows' $txt 'Bien' $C.Green 0)) }
-            else { $rows.Add((New-HealthRow 'Sistema' 'Última actualización de Windows' $txt 'Hace mucho' $C.Amber 1)) }
+            $txt = $lw.ToString((Get-DateFmt)) + ' (' + (Get-DaysAgoText $lw) + ')'
+            if (($now - $lw).TotalDays -le 40) { $rows.Add((New-HealthRow $secSys (L 'Última actualización de Windows' 'Last Windows update') $txt $tGood $C.Green 0)) }
+            else { $rows.Add((New-HealthRow $secSys (L 'Última actualización de Windows' 'Last Windows update') $txt (L 'Hace mucho' 'Long ago') $C.Amber 1)) }
         }
         if ($info.LastBoot) {
             $lb = [datetime]$info.LastBoot
-            $txt = $lb.ToString('dd/MM/yyyy HH:mm') + ' (' + (Get-DaysAgoText $lb) + ')'
-            if (($now - $lb).TotalDays -le 14) { $rows.Add((New-HealthRow 'Sistema' 'Último reinicio' $txt 'Bien' $C.Green 0)) }
-            else { $rows.Add((New-HealthRow 'Sistema' 'Último reinicio' $txt 'Reinicia la PC' $C.Amber 1)) }
+            $txt = $lb.ToString((Get-DateFmt) + ' HH:mm') + ' (' + (Get-DaysAgoText $lb) + ')'
+            if (($now - $lb).TotalDays -le 14) { $rows.Add((New-HealthRow $secSys (L 'Último reinicio' 'Last restart') $txt $tGood $C.Green 0)) }
+            else { $rows.Add((New-HealthRow $secSys (L 'Último reinicio' 'Last restart') $txt (L 'Reinicia la PC' 'Restart the PC') $C.Amber 1)) }
         }
         if ($info.BoardProduct) {
             $board = (($info.BoardMfr + ' ' + $info.BoardProduct).Trim())
-            $rows.Add((New-HealthRow 'Sistema' 'Placa madre' $board '' $C.Gray 0))
+            $rows.Add((New-HealthRow $secSys (L 'Placa madre' 'Motherboard') $board '' $C.Gray 0))
         }
         if ($info.BiosVersion) {
             $q = [uri]::EscapeDataString((($info.BoardMfr + ' ' + $info.BoardProduct + ' BIOS').Trim()))
             $link = "https://www.google.com/search?q=$q"
             $txt = $info.BiosVersion
-            $st = 'Revisa si hay nueva'; $col = $C.Blue; $lvl = 0
+            $st = L 'Revisa si hay nueva' 'Check for a new one'; $col = $C.Blue; $lvl = 0
             if ($info.BiosDate) {
                 $bd = [datetime]$info.BiosDate
-                $txt += ' (' + $bd.ToString('dd/MM/yyyy') + ')'
-                if (($now - $bd).TotalDays -gt 730) { $st = 'Más de 2 años'; $col = $C.Amber; $lvl = 1 }
-                else { $st = 'Reciente'; $col = $C.Green }
+                $txt += ' (' + $bd.ToString((Get-DateFmt)) + ')'
+                if (($now - $bd).TotalDays -gt 730) { $st = L 'Más de 2 años' 'Over 2 years old'; $col = $C.Amber; $lvl = 1 }
+                else { $st = L 'Reciente' 'Recent'; $col = $C.Green }
             }
-            $rows.Add((New-HealthRow 'Sistema' 'BIOS' $txt $st $col $lvl $link 'Buscar BIOS'))
+            $rows.Add((New-HealthRow $secSys 'BIOS' $txt $st $col $lvl $link (L 'Buscar BIOS' 'Search BIOS')))
         }
     }
 
     # --- Discos ---
     foreach ($d in @($out | Where-Object { $_.Type -eq 'Disk' })) {
         $media = [string]$d.Media
-        if ($media -eq 'Unspecified' -or -not $media) { $media = 'Disco' }
+        if ($media -eq 'Unspecified' -or -not $media) { $media = L 'Disco' 'Disk' }
         $parts = @("$media $($d.Bus)".Trim(), "$($d.SizeGB) GB")
-        $lvl = 0; $st = 'Bueno'; $col = $C.Green
+        $lvl = 0; $st = L 'Bueno' 'Good'; $col = $C.Green
         if ($d.Temp) {
             $parts += "$($d.Temp) °C"
-            if ([int]$d.Temp -ge 70) { $lvl = [Math]::Max($lvl, 2); $st = 'Muy caliente'; $col = $C.Red }
-            elseif ([int]$d.Temp -ge 60) { $lvl = [Math]::Max($lvl, 1); $st = 'Caliente'; $col = $C.Amber }
+            if ([int]$d.Temp -ge 70) { $lvl = [Math]::Max($lvl, 2); $st = L 'Muy caliente' 'Very hot'; $col = $C.Red }
+            elseif ([int]$d.Temp -ge 60) { $lvl = [Math]::Max($lvl, 1); $st = L 'Caliente' 'Hot'; $col = $C.Amber }
         }
         if ($null -ne $d.Wear -and [string]$d.Wear -ne '') {
-            $parts += "desgaste $($d.Wear)%"
-            if ([int]$d.Wear -ge 90) { $lvl = 2; $st = 'Desgaste alto'; $col = $C.Red }
-            elseif ([int]$d.Wear -ge 70 -and $lvl -lt 2) { $lvl = 1; $st = 'Desgaste medio'; $col = $C.Amber }
+            $parts += ((L 'desgaste {0}%' 'wear {0}%') -f $d.Wear)
+            if ([int]$d.Wear -ge 90) { $lvl = 2; $st = L 'Desgaste alto' 'High wear'; $col = $C.Red }
+            elseif ([int]$d.Wear -ge 70 -and $lvl -lt 2) { $lvl = 1; $st = L 'Desgaste medio' 'Medium wear'; $col = $C.Amber }
         }
-        if ($d.Hours) { $parts += ('{0:N0} h encendido' -f [double]$d.Hours) }
+        if ($d.Hours) { $parts += ((L '{0:N0} h encendido' '{0:N0} h powered on') -f [double]$d.Hours) }
         switch ([string]$d.Health) {
-            'Warning'   { $lvl = [Math]::Max($lvl, 1); $st = 'Advertencia'; $col = $C.Amber }
-            'Unhealthy' { $lvl = 2; $st = 'Con fallas'; $col = $C.Red }
+            'Warning'   { $lvl = [Math]::Max($lvl, 1); $st = L 'Advertencia' 'Warning'; $col = $C.Amber }
+            'Unhealthy' { $lvl = 2; $st = L 'Con fallas' 'Failing'; $col = $C.Red }
         }
-        $rows.Add((New-HealthRow 'Discos' $d.Name ($parts -join ' · ') $st $col $lvl))
+        $rows.Add((New-HealthRow $secDisk $d.Name ($parts -join ' · ') $st $col $lvl))
     }
     foreach ($v in @($out | Where-Object { $_.Type -eq 'Volume' })) {
         $pct = 0; if ([double]$v.SizeGB -gt 0) { $pct = [math]::Round(100 * [double]$v.FreeGB / [double]$v.SizeGB) }
-        $name = "Unidad $($v.Letter)"; if ($v.Label) { $name += " ($($v.Label))" }
-        $txt = "$($v.FreeGB) GB libres de $($v.SizeGB) GB ($pct%)"
-        if ($pct -lt 10) { $rows.Add((New-HealthRow 'Discos' $name $txt 'Casi llena' $C.Red 2)) }
-        elseif ($pct -lt 20) { $rows.Add((New-HealthRow 'Discos' $name $txt 'Poco espacio' $C.Amber 1)) }
-        else { $rows.Add((New-HealthRow 'Discos' $name $txt 'Bien' $C.Green 0)) }
+        $name = (L 'Unidad {0}' 'Drive {0}') -f $v.Letter; if ($v.Label) { $name += " ($($v.Label))" }
+        $txt = (L '{0} GB libres de {1} GB ({2}%)' '{0} GB free of {1} GB ({2}%)') -f $v.FreeGB, $v.SizeGB, $pct
+        if ($pct -lt 10) { $rows.Add((New-HealthRow $secDisk $name $txt (L 'Casi llena' 'Almost full') $C.Red 2)) }
+        elseif ($pct -lt 20) { $rows.Add((New-HealthRow $secDisk $name $txt (L 'Poco espacio' 'Low space') $C.Amber 1)) }
+        else { $rows.Add((New-HealthRow $secDisk $name $txt $tGood $C.Green 0)) }
     }
     # --- Estabilidad (ultimos 30 dias) ---
     $events = @($out | Where-Object { $_.Type -eq 'Event' })
     $power = @($events | Where-Object { $_.Kind -eq 'Power' })
     if ($power.Count -eq 0) { $power = @($events | Where-Object { $_.Kind -eq 'PowerOld' }) }
     $defs = @(
-        @{ Item = 'Apagados inesperados (corte de luz, cuelgue o reinicio forzado)'; List = $power; Warn = 1; Bad = 3; BadText = 'Revisa la luz / el UPS' }
-        @{ Item = 'Pantallazos azules'; List = @($events | Where-Object { $_.Kind -eq 'BSOD' }); Warn = 1; Bad = 2; BadText = 'Hay que revisar' }
-        @{ Item = 'Errores de hardware (WHEA)'; List = @($events | Where-Object { $_.Kind -eq 'WHEA' }); Warn = 1; Bad = 5; BadText = 'Hay que revisar' }
-        @{ Item = 'Errores de disco'; List = @($events | Where-Object { $_.Kind -eq 'Disk' }); Warn = 1; Bad = 5; BadText = 'Haz copia de seguridad' }
+        @{ Item = (L 'Apagados inesperados (corte de luz, cuelgue o reinicio forzado)' 'Unexpected shutdowns (power cut, freeze or forced restart)'); List = $power; Warn = 1; Bad = 3; BadText = (L 'Revisa la luz / el UPS' 'Check power / the UPS') }
+        @{ Item = (L 'Pantallazos azules' 'Blue screens'); List = @($events | Where-Object { $_.Kind -eq 'BSOD' }); Warn = 1; Bad = 2; BadText = (L 'Hay que revisar' 'Needs checking') }
+        @{ Item = (L 'Errores de hardware (WHEA)' 'Hardware errors (WHEA)'); List = @($events | Where-Object { $_.Kind -eq 'WHEA' }); Warn = 1; Bad = 5; BadText = (L 'Hay que revisar' 'Needs checking') }
+        @{ Item = (L 'Errores de disco' 'Disk errors'); List = @($events | Where-Object { $_.Kind -eq 'Disk' }); Warn = 1; Bad = 5; BadText = (L 'Haz copia de seguridad' 'Back up your files') }
     )
     foreach ($df in $defs) {
         $n = $df.List.Count
-        if ($n -eq 0) { $rows.Add((New-HealthRow 'Estabilidad' $df.Item 'Ninguno en 30 días' 'Bien' $C.Green 0)); continue }
+        if ($n -eq 0) { $rows.Add((New-HealthRow $secStab $df.Item (L 'Ninguno en 30 días' 'None in 30 days') $tGood $C.Green 0)); continue }
         $lastE = ($df.List | Sort-Object Date -Descending | Select-Object -First 1).Date
-        $txt = "$n en 30 días · último: " + ([datetime]$lastE).ToString('dd/MM/yyyy HH:mm')
-        if ($n -ge $df.Bad) { $rows.Add((New-HealthRow 'Estabilidad' $df.Item $txt $df.BadText $C.Red 2 'perfmon-rel' 'Ver detalle')) }
-        else { $rows.Add((New-HealthRow 'Estabilidad' $df.Item $txt 'Atención' $C.Amber 1 'perfmon-rel' 'Ver detalle')) }
+        $txt = ((L '{0} en 30 días · último: ' '{0} in 30 days · last: ') -f $n) + ([datetime]$lastE).ToString((Get-DateFmt) + ' HH:mm')
+        if ($n -ge $df.Bad) { $rows.Add((New-HealthRow $secStab $df.Item $txt $df.BadText $C.Red 2 'perfmon-rel' (L 'Ver detalle' 'Details'))) }
+        else { $rows.Add((New-HealthRow $secStab $df.Item $txt (L 'Atención' 'Attention') $C.Amber 1 'perfmon-rel' (L 'Ver detalle' 'Details'))) }
     }
     return ,@($rows)
 }
@@ -2271,13 +2303,22 @@ $script:XamlText = @'
 
             <TextBlock Text="Apariencia" Style="{StaticResource SectionTitle}"/>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-              <TextBlock Text="Tema:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+              <TextBlock Text="Tema:" VerticalAlignment="Center" Margin="0,0,10,0" MinWidth="64"/>
               <ComboBox x:Name="CmbTheme" Width="200" Foreground="#111318">
                 <ComboBoxItem Content="Igual que Windows" Tag="System"/>
                 <ComboBoxItem Content="Oscuro" Tag="Dark"/>
                 <ComboBoxItem Content="Claro" Tag="Light"/>
               </ComboBox>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+              <TextBlock Text="Idioma:" VerticalAlignment="Center" Margin="0,0,10,0" MinWidth="64"/>
+              <ComboBox x:Name="CmbLang" Width="200" Foreground="#111318">
+                <ComboBoxItem Content="Igual que Windows" Tag="Auto"/>
+                <ComboBoxItem Content="Español" Tag="es"/>
+                <ComboBoxItem Content="English" Tag="en"/>
+              </ComboBox>
+            </StackPanel>
+            <TextBlock x:Name="LangNote" Text="El idioma nuevo se usa al volver a abrir Revix PC." Style="{StaticResource Muted}" Margin="74,0,0,10" Visibility="Collapsed"/>
 
             <TextBlock Text="Seguridad al instalar" Style="{StaticResource SectionTitle}"/>
             <CheckBox x:Name="ChkRestorePoint" Content="Crear un punto de restauración antes de instalar actualizaciones" Margin="0,0,0,6"/>
@@ -2372,6 +2413,169 @@ $script:XamlText = @'
 # Colores del tema oscuro como valores iniciales (Apply-Theme los cambia en vivo)
 $brushXml = ($script:Themes.Dark.Keys | ForEach-Object { "<SolidColorBrush x:Key=`"$_`" Color=`"$($script:Themes.Dark[$_])`"/>" }) -join "`n    "
 $script:XamlText = $script:XamlText.Replace('<!--BRUSHES-->', $brushXml)
+
+# Textos de la ventana en inglés (la ventana está escrita en español)
+$script:XamlEn = @{
+    'Resumen' = 'Overview'
+    'Programas' = 'Programs'
+    'Dispositivos' = 'Devices'
+    'Salud' = 'Health'
+    'Limpieza' = 'Cleanup'
+    'Inicio de Windows' = 'Windows startup'
+    'Desinstalar' = 'Uninstall'
+    'Mi PC' = 'My PC'
+    'Progreso' = 'Progress'
+    'Historial' = 'History'
+    'Ajustes' = 'Settings'
+    'Modo juego' = 'Game mode'
+    'Exportar reporte' = 'Export report'
+    'Escanear todo' = 'Scan all'
+    'Sin permisos de administrador: puedes escanear, pero para instalar actualizaciones de Windows, crear puntos de restauración o respaldar drivers, cierra Revix PC (Salir) y ábrela aceptando el aviso de Windows.' = 'No administrator rights: you can scan, but to install Windows updates, create restore points or back up drivers, close Revix PC (Exit) and open it again accepting the Windows prompt.'
+    'de 100' = 'of 100'
+    'Revisando tu PC...' = 'Checking your PC...'
+    'Esto tarda un momento.' = 'This takes a moment.'
+    'Actualizar programas' = 'Update programs'
+    'Salud y seguridad' = 'Health and security'
+    'Por hacer' = 'To do'
+    'Revisando...' = 'Checking...'
+    'Temperaturas' = 'Temperatures'
+    'Estabilidad · 30 días' = 'Stability · 30 days'
+    'Mostrar ignorados y saltados' = 'Show ignored and skipped'
+    'Marcar todo' = 'Select all'
+    'Actualizar marcados' = 'Update selected'
+    'Actualizar todos' = 'Update all'
+    'Saltar esta versión' = 'Skip this version'
+    'Ignorar siempre' = 'Always ignore'
+    'Automático sí / no' = 'Automatic on / off'
+    'Volver a una versión anterior' = 'Go back to a previous version'
+    'Apps de la Store' = 'Store apps'
+    'Programa' = 'Program'
+    'Versión actual' = 'Current version'
+    'Nueva versión' = 'New version'
+    'Origen' = 'Source'
+    'Instalar marcadas' = 'Install selected'
+    'Abrir Windows Update' = 'Open Windows Update'
+    'Actualización' = 'Update'
+    'Estado' = 'Status'
+    'Tipo' = 'Type'
+    'Gravedad' = 'Severity'
+    'Tamaño' = 'Size'
+    'Nota' = 'Note'
+    'Mostrar drivers genéricos de Windows' = 'Show generic Windows drivers'
+    'Administrador de dispositivos' = 'Device Manager'
+    'Respaldar drivers' = 'Back up drivers'
+    'Restaurar respaldo' = 'Restore backup'
+    'Dispositivo' = 'Device'
+    'Fabricante' = 'Manufacturer'
+    'Versión' = 'Version'
+    'Fecha' = 'Date'
+    'Volver a revisar' = 'Check again'
+    'Actualizar firmas de Defender' = 'Update Defender signatures'
+    'Abrir Seguridad de Windows' = 'Open Windows Security'
+    'Área' = 'Area'
+    'Elemento' = 'Item'
+    'Detalle' = 'Details'
+    'Calcular espacio' = 'Calculate space'
+    'Limpiar marcados' = 'Clean selected'
+    'Qué se limpia' = 'What gets cleaned'
+    'Actualizar lista' = 'Refresh list'
+    'Abrir Administrador de tareas' = 'Open Task Manager'
+    'Desmarca lo que no necesitas al prender la PC. No se borra nada.' = 'Uncheck what you don''t need when the PC starts. Nothing is deleted.'
+    'Activo' = 'Active'
+    'Editor' = 'Publisher'
+    'Impacto en el arranque' = 'Startup impact'
+    'Dónde' = 'Where'
+    'Comando' = 'Command'
+    'Buscar:' = 'Search:'
+    'Desinstalar seleccionado' = 'Uninstall selected'
+    'Aplicaciones de Windows' = 'Windows apps'
+    'Instalado' = 'Installed'
+    'Copiar ficha' = 'Copy specs'
+    'Actualizar' = 'Refresh'
+    'Informe de batería' = 'Battery report'
+    'Parte' = 'Part'
+    'Temperaturas en vivo' = 'Live temperatures'
+    'Valor' = 'Value'
+    'Se actualiza cada 3 segundos mientras miras esta pestaña. La temperatura del procesador no se puede leer sin un driver especial (para eso usa HWiNFO).' = 'Updates every 3 seconds while you''re on this tab. The processor temperature can''t be read without a special driver (use HWiNFO for that).'
+    'Sin tareas en curso' = 'No tasks running'
+    'Cancelar (al terminar el actual)' = 'Cancel (after the current one)'
+    'Limpiar lista' = 'Clear list'
+    'Tarea' = 'Task'
+    'Acción' = 'Action'
+    'Resultado' = 'Result'
+    'Funcionamiento' = 'Behavior'
+    'Iniciar con Windows (queda junto al reloj y revisa sola)' = 'Start with Windows (stays next to the clock and checks on its own)'
+    'Al cerrar la ventana, seguir funcionando junto al reloj' = 'When closing the window, keep running next to the clock'
+    'Avisarme con una notificación cuando haya actualizaciones' = 'Notify me when updates are available'
+    'Revisar automáticamente:' = 'Check automatically:'
+    'Nunca' = 'Never'
+    'Cada 6 horas' = 'Every 6 hours'
+    'Cada 12 horas' = 'Every 12 hours'
+    'Cada 24 horas' = 'Every 24 hours'
+    'Apariencia' = 'Appearance'
+    'Tema:' = 'Theme:'
+    'Idioma:' = 'Language:'
+    'Igual que Windows' = 'Same as Windows'
+    'Oscuro' = 'Dark'
+    'Claro' = 'Light'
+    'El idioma nuevo se usa al volver a abrir Revix PC.' = 'The new language is used the next time Revix PC opens.'
+    'Seguridad al instalar' = 'Safety when installing'
+    'Crear un punto de restauración antes de instalar actualizaciones' = 'Create a restore point before installing updates'
+    'Si la protección del sistema está apagada, Revix PC te preguntará antes de encenderla. Si algo sale mal, puedes volver atrás con ''Restaurar sistema''.' = 'If System Protection is off, Revix PC will ask you before turning it on. If something goes wrong, you can go back with ''System Restore''.'
+    'Abrir Restaurar sistema' = 'Open System Restore'
+    'Mientras juego o uso algo en pantalla completa: no avisar, no revisar y no instalar nada' = 'While I''m gaming or using something full screen: don''t notify, check or install anything'
+    'Juegos extra a detectar aunque no estén en pantalla completa (nombre del proceso, separados por comas):' = 'Extra games to detect even when not full screen (process name, separated by commas):'
+    'Programas automáticos' = 'Automatic programs'
+    'Los programas marcados como ''Automático'' (pestaña Programas) se actualizan solos en cada revisión automática, sin preguntar y sin crear punto de restauración. Nunca durante el modo juego.' = 'Programs marked as ''Automatic'' (Programs tab) update on their own at each automatic check, without asking and without creating a restore point. Never during game mode.'
+    'Avisarme si la tarjeta de video pasa de 85 °C (revisa cada 30 segundos)' = 'Warn me if the graphics card goes above 85 °C (checks every 30 seconds)'
+    'Actualizaciones de Revix PC' = 'Revix PC updates'
+    'Buscar nuevas versiones de Revix PC al abrir (en GitHub)' = 'Check for new versions of Revix PC when opening (on GitHub)'
+    'Buscar nueva versión ahora' = 'Check for a new version now'
+    'Acerca de' = 'About'
+    'Hecho por Marco11  ·  Licencia MIT (gratis y de código abierto)' = 'Made by Marco11  ·  MIT License (free and open source)'
+    'Privacidad: Revix PC no envía tus datos a nadie. Todo se revisa en tu PC. Solo se conecta a internet para consultar a Microsoft (winget, Windows Update y Defender), a NVIDIA (si tienes tarjeta NVIDIA, para ver el último driver) y a GitHub (para buscar versiones nuevas de Revix PC).' = 'Privacy: Revix PC doesn''t send your data to anyone. Everything is checked on your PC. It only connects to the internet to query Microsoft (winget, Windows Update and Defender), NVIDIA (if you have an NVIDIA card, to see the latest driver) and GitHub (to look for new versions of Revix PC).'
+    'Revix PC no está afiliado ni respaldado por Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX ni otras marcas que aparezcan en la app. Sus nombres pertenecen a sus dueños y solo se usan para identificar tu hardware y software.' = 'Revix PC is not affiliated with or endorsed by Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX or any other brand shown in the app. Their names belong to their owners and are only used to identify your hardware and software.'
+    'Se ofrece ''tal cual'', sin garantía. Úsala bajo tu responsabilidad. Al actualizar programas, winget acepta en tu nombre las licencias de esos programas.' = 'Provided ''as is'', without warranty. Use it at your own risk. When updating programs, winget accepts those programs'' licenses on your behalf.'
+    'Ver en GitHub' = 'View on GitHub'
+    'Ver licencia' = 'View license'
+    'Reportar un problema' = 'Report a problem'
+    'Avanzado' = 'Advanced'
+    'Descargar instalador' = 'Download installer'
+    'Abrir carpeta de datos' = 'Open data folder'
+    'Desinstalar Revix PC' = 'Uninstall Revix PC'
+    'Listo' = 'Ready'
+    'Cambiar a tema claro' = 'Switch to light theme'
+    'Minimizar' = 'Minimize'
+    'Maximizar' = 'Maximize'
+    'Cerrar' = 'Close'
+    'Bienvenido a Revix PC' = 'Welcome to Revix PC'
+    'Revix PC revisa y actualiza tus programas, Windows Update y drivers, y te muestra la salud de tu PC. Antes de empezar, lee esto:' = 'Revix PC checks and updates your programs, Windows Update and drivers, and shows you your PC''s health. Before you start, please read this:'
+    'Licencias. ' = 'Licenses. '
+    'Para actualizar programas, Revix PC usa winget (de Microsoft), que acepta en tu nombre los acuerdos de licencia de cada programa y de sus fuentes. Si no estás de acuerdo con la licencia de un programa, no lo actualices desde aquí.' = 'To update programs, Revix PC uses winget (from Microsoft), which accepts the license agreements of each program and its sources on your behalf. If you don''t agree with a program''s license, don''t update it from here.'
+    'Responsabilidad. ' = 'Responsibility. '
+    'Revix PC es gratis y de código abierto (licencia MIT). Se ofrece tal cual, sin garantía. Úsala bajo tu responsabilidad y ten copia de tus archivos importantes.' = 'Revix PC is free and open source (MIT license). It is provided as is, without warranty. Use it at your own risk and keep a backup of your important files.'
+    'Privacidad. ' = 'Privacy. '
+    'No envía tus datos a nadie. Solo se conecta a Microsoft, a NVIDIA (si tienes tarjeta NVIDIA) y a GitHub (para buscar versiones nuevas).' = 'It doesn''t send your data to anyone. It only connects to Microsoft, NVIDIA (if you have an NVIDIA card) and GitHub (to look for new versions).'
+    'Instalación. ' = 'Installation. '
+    'Se instalará en Archivos de programa, con accesos directos en el Escritorio y el menú Inicio. Para quitarla: Configuración &gt; Aplicaciones &gt; Revix PC.' = 'It will be installed in Program Files, with shortcuts on the Desktop and in the Start menu. To remove it: Settings &gt; Apps &gt; Revix PC.'
+    'Entiendo y acepto' = 'I understand and accept'
+    'Salir' = 'Exit'
+    'Aceptar y empezar' = 'Accept and start'
+    'Marca el programa que quieres regresar a la versión que tenías antes. La versión nueva quedará como ''saltada'' para que no se vuelva a instalar sola.' = 'Check the program you want to return to the version you had before. The new version will be marked as ''skipped'' so it doesn''t install again on its own.'
+    'Volver a' = 'Go back to'
+    'Actualizado el' = 'Updated on'
+    'Volver a la versión anterior' = 'Go back to the previous version'
+}
+function Convert-XamlLang([string]$x) {
+    if ($script:Lang -ne 'en') { return $x }
+    return [regex]::Replace($x, '\b(Text|Content|Header|ToolTip|Title)="([^"{]*)"', {
+        param($m)
+        $v = $m.Groups[2].Value
+        if ($script:XamlEn.ContainsKey($v)) { return $m.Groups[1].Value + '="' + $script:XamlEn[$v] + '"' }
+        return $m.Value
+    })
+}
+$script:XamlText = Convert-XamlLang $script:XamlText
 $script:ResourcesText = [regex]::Match($script:XamlText, '<Window\.Resources>.*?</Window\.Resources>', 'Singleline').Value
 [xml]$xaml = $script:XamlText
 
@@ -2399,7 +2603,7 @@ try {
              'CmbTheme','BtnTheme','ThemeIcon','AboutLogo','AboutTitle','BtnGitHub','BtnLicense','BtnReport','BtnUninstallApp','ExpAdvanced',
              'TabHome','NavList','PageTitle','GameDot','GameChipText','VersionText','ScoreArc','ScoreText','ScoreTitle','ScoreSub',
              'BtnHomeUpdate','BtnHomeClean','CardProg','CardWU','CardDrv','CardHealth','SubPrograms','SubWU','SubDrivers','SubHealth',
-             'TodoCount','TodoList','TodoEmpty','MiniTemps','MiniStab',
+             'TodoCount','TodoList','TodoEmpty','MiniTemps','MiniStab','CmbLang','LangNote',
              'BadgeProgBox','BadgeProg','BadgeWUBox','BadgeWU','BadgeDevBox','BadgeDev','BadgeHealthBox','BadgeHealth','BadgeTaskBox','BadgeTask','RootGrid','BtnWinMin','BtnWinMax','BtnWinClose','MaxIcon'
     foreach ($n in $names) { Set-Variable -Scope Script -Name $n -Value $window.FindName($n) }
 
@@ -2475,10 +2679,10 @@ try {
             $dlg.FindName('MsgText').Text = $text
             $by = $dlg.FindName('BtnYes'); $bn = $dlg.FindName('BtnNo')
             if ($buttons -eq 'YesNo') {
-                $by.Content = 'Sí'; $bn.Content = 'No'; $bn.IsCancel = $true
+                $by.Content = (L 'Sí' 'Yes'); $bn.Content = 'No'; $bn.IsCancel = $true
                 $script:MsgResult = 'No'
             } else {
-                $by.Content = 'Aceptar'; $by.IsCancel = $true; $bn.Visibility = 'Collapsed'
+                $by.Content = (L 'Aceptar' 'OK'); $by.IsCancel = $true; $bn.Visibility = 'Collapsed'
                 $script:MsgResult = 'OK'
             }
             $script:MsgDialog = $dlg
@@ -2530,12 +2734,12 @@ try {
 </Window>
 "@
         try {
-            $dlg = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$dx)))
+            $dlg = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml](Convert-XamlLang $dx))))
             Apply-Theme $dlg
             $script:WelcomeDialog = $dlg
             $script:WelcomeOk = $false
             if ($script:LogoImage) { $dlg.FindName('WLogo').Source = $script:LogoImage }
-            $dlg.FindName('WVer').Text = "Versión $($script:AppVersion)  ·  Hecho por Marco11"
+            $dlg.FindName('WVer').Text = (L 'Versión {0}  ·  Hecho por Marco11' 'Version {0}  ·  Made by Marco11') -f $script:AppVersion
             if (-not $willInstall) { $dlg.FindName('WInstall').Visibility = 'Collapsed' }
             $dlg.FindName('WChk').Add_Click({ $script:WelcomeDialog.FindName('WYes').IsEnabled = [bool]$script:WelcomeDialog.FindName('WChk').IsChecked })
             $dlg.FindName('WYes').Add_Click({ $script:WelcomeOk = $true; $script:WelcomeDialog.Close() })
@@ -2546,7 +2750,7 @@ try {
             return $script:WelcomeOk
         } catch {
             Write-ErrorLog "bienvenida: $_"
-            return ((Show-Msg "Revix PC usa winget, que acepta en tu nombre las licencias de los programas que actualizas. Es gratis (licencia MIT), se ofrece sin garantía y la usas bajo tu responsabilidad. No envía tus datos.`n`n¿Aceptas?" 'Question' 'YesNo') -eq 'Yes')
+            return ((Show-Msg (L "Revix PC usa winget, que acepta en tu nombre las licencias de los programas que actualizas. Es gratis (licencia MIT), se ofrece sin garantía y la usas bajo tu responsabilidad. No envía tus datos.`n`n¿Aceptas?" "Revix PC uses winget, which accepts the licenses of the programs you update on your behalf. It's free (MIT license), provided without warranty, and you use it at your own risk. It doesn't send your data.`n`nDo you accept?") 'Question' 'YesNo') -eq 'Yes')
         }
     }
 
@@ -2555,10 +2759,10 @@ try {
     try { $script:TrayIcon.Icon = New-Object System.Drawing.Icon($script:IconPath) } catch { $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Application }
     $script:TrayIcon.Text = 'Revix PC'
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
-    [void]$menu.Items.Add('Abrir Revix PC', $null, { Show-Main })
-    [void]$menu.Items.Add('Escanear ahora', $null, { Start-ScanAll })
+    [void]$menu.Items.Add((L 'Abrir Revix PC' 'Open Revix PC'), $null, { Show-Main })
+    [void]$menu.Items.Add((L 'Escanear ahora' 'Scan now'), $null, { Start-ScanAll })
     [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-    [void]$menu.Items.Add('Salir', $null, { Exit-App })
+    [void]$menu.Items.Add((L 'Salir' 'Exit'), $null, { Exit-App })
     $script:TrayIcon.ContextMenuStrip = $menu
     $script:TrayIcon.Add_DoubleClick({ Show-Main })
     $script:TrayIcon.Add_BalloonTipClicked({ Show-Main })
@@ -2608,7 +2812,7 @@ try {
             $script:StatusText.Text = ($labels -join '  ·  ') + '...'
         } else {
             $script:Busy.Visibility = 'Collapsed'
-            $script:StatusText.Text = 'Listo'
+            $script:StatusText.Text = L 'Listo' 'Ready'
         }
         $script:BtnScanAll.IsEnabled = -not (Test-AnyRunning @('Programs', 'WU', 'Devices', 'Health'))
         $script:BtnCancel.IsEnabled = Test-AnyRunning @('ProgInstall', 'WUInstall', 'CleanRun', 'Rollback')
@@ -2622,7 +2826,7 @@ try {
             $d = @($script:WUItems | Where-Object { $_.IsDriver }).Count + (Get-NvidiaNewCount)
             $total = $p + $w + $d
             if ($total -gt 0 -and -not $script:Window.IsVisible) {
-                Show-Notify 'Hay actualizaciones disponibles' "Programas: $p   ·   Windows: $w   ·   Drivers: $d"
+                Show-Notify (L 'Hay actualizaciones disponibles' 'Updates available') ((L 'Programas: {0}   ·   Windows: {1}   ·   Drivers: {2}' 'Programs: {0}   ·   Windows: {1}   ·   Drivers: {2}') -f $p, $w, $d)
             }
         }
         Update-TrayText
@@ -2632,7 +2836,7 @@ try {
         $p = @($script:ProgramItems | Where-Object { -not $_.Hidden }).Count
         $w = @($script:WUItems).Count
         $t = 'Revix PC'
-        if ($script:Scanned.Programs -or $script:Scanned.WU) { $t = "Revix PC - $($p + $w) pendientes" }
+        if ($script:Scanned.Programs -or $script:Scanned.WU) { $t = (L 'Revix PC - {0} pendientes' 'Revix PC - {0} pending') -f ($p + $w) }
         try { $script:TrayIcon.Text = $t } catch {}
     }
 
@@ -2680,7 +2884,7 @@ try {
             Remove-Job $j -Force -ErrorAction SilentlyContinue
             $script:Running[$entry.Kind] = $false
             try { & $entry.OnDone @($entry.Output) $errText }
-            catch { Write-ErrorLog "OnDone $($entry.Kind): $_"; Add-History 'Error interno' $_.Exception.Message }
+            catch { Write-ErrorLog "OnDone $($entry.Kind): $_"; Add-History (L 'Error interno' 'Internal error') $_.Exception.Message }
             Update-Busy
         }
     })
@@ -2689,20 +2893,21 @@ try {
     # Reinicio normal de Windows (sin forzar: los programas abiertos pueden pedir guardar)
     function Request-Restart {
         try { Restart-Computer -ErrorAction Stop }
-        catch { Show-Msg "Windows no pudo reiniciar ahora:`n$($_.Exception.Message)`n`nReinicia desde el menú Inicio." 'Warning' | Out-Null }
+        catch { Show-Msg ((L "Windows no pudo reiniciar ahora:`n{0}`n`nReinicia desde el menú Inicio." "Windows couldn't restart now:`n{0}`n`nRestart from the Start menu.") -f $_.Exception.Message) 'Warning' | Out-Null }
     }
 
     # ---------- Tareas (pestaña Progreso) ----------
     function Add-TaskRow([string]$key, [string]$name) {
         $t = New-Object RevixPC.TaskItem
-        $t.Key = $key; $t.Name = $name; $t.StatusText = 'En cola'; $t.StatusColor = $script:C.Gray; $t.Detail = ''
+        $t.Key = $key; $t.Name = $name; $t.StatusText = (L 'En cola' 'Queued'); $t.StatusColor = $script:C.Gray; $t.Detail = ''; $t.Queued = $true; $t.Open = $true
         Set-StatusBrush $t
         $script:Tasks.Add($t)
     }
     function Set-TaskRow([string]$key, [string]$status, [string]$color, [string]$detail) {
         foreach ($t in $script:Tasks) {
-            if ($t.Key -eq $key -and ($t.StatusText -eq 'En cola' -or $t.StatusText -like '*...')) {
+            if ($t.Key -eq $key -and $t.Open) {
                 $t.StatusText = $status; $t.StatusColor = $color; Set-StatusBrush $t
+                $t.Queued = $false; $t.Open = $status.EndsWith('...')
                 if ($null -ne $detail) { $t.Detail = $detail }
                 break
             }
@@ -2710,7 +2915,7 @@ try {
         $script:GridTasks.Items.Refresh()
     }
     function Set-QueuedCancelled {
-        foreach ($t in $script:Tasks) { if ($t.StatusText -eq 'En cola') { $t.StatusText = 'Cancelado'; $t.StatusColor = $script:C.Gray; Set-StatusBrush $t } }
+        foreach ($t in $script:Tasks) { if ($t.Queued) { $t.StatusText = (L 'Cancelado' 'Cancelled'); $t.StatusColor = $script:C.Gray; $t.Queued = $false; $t.Open = $false; Set-StatusBrush $t } }
         $script:GridTasks.Items.Refresh()
     }
     function Reset-Cancel { try { Remove-Item (Get-CancelFile) -Force -ErrorAction SilentlyContinue } catch {} }
@@ -2742,7 +2947,7 @@ try {
         $script:GridClean.ItemsSource = @($script:CleanItems)
         $sum = 0.0
         foreach ($c in $script:CleanItems) { if ($c.Selected -and $c.Bytes -gt 0) { $sum += $c.Bytes } }
-        if ($script:Scanned.Clean) { $script:CleanTotal.Text = 'Se pueden liberar: ' + (Format-Bytes $sum) } else { $script:CleanTotal.Text = '' }
+        if ($script:Scanned.Clean) { $script:CleanTotal.Text = (L 'Se pueden liberar: ' 'Can be freed: ') + (Format-Bytes $sum) } else { $script:CleanTotal.Text = '' }
     }
     function Rebuild-Devices {
         if (-not $script:Scanned.Devices) { return }
@@ -2753,13 +2958,13 @@ try {
 
     # ---------- Escaneos ----------
     function Scan-Programs {
-        [void](Start-Bg 'Programs' 'Buscando programas' $script:JobWingetScan $null {
+        [void](Start-Bg 'Programs' (L 'Buscando programas' 'Looking for programs') $script:JobWingetScan $null {
             param($out, $err)
             if ($err) {
-                if ($err -match 'WINGET_NO_ENCONTRADO') { $msg = 'No se encontró winget. Instala "Instalador de aplicación" (App Installer) desde Microsoft Store y vuelve a escanear.' }
+                if ($err -match 'WINGET_NO_ENCONTRADO') { $msg = L 'No se encontró winget. Instala "Instalador de aplicación" (App Installer) desde Microsoft Store y vuelve a escanear.' 'winget was not found. Install "App Installer" from the Microsoft Store and scan again.' }
                 else { $msg = $err }
                 $script:NumPrograms.Text = '!'
-                Add-History 'Escanear programas' "Error: $msg"
+                Add-History (L 'Escanear programas' 'Scan programs') "Error: $msg"
                 if ($script:Window.IsVisible) { Show-Msg $msg 'Warning' | Out-Null }
                 return
             }
@@ -2787,20 +2992,20 @@ try {
             $script:Scanned.Programs = $true
             Refresh-Programs; Update-Summary
             $n = @($script:ProgramItems | Where-Object { -not $_.Hidden }).Count
-            Add-History 'Escanear programas' "$n con actualización"
-            $script:LastScan.Text = 'Último escaneo: ' + (Get-Date).ToString('dd/MM/yyyy HH:mm')
+            Add-History (L 'Escanear programas' 'Scan programs') ((L '{0} con actualización' '{0} with an update') -f $n)
+            $script:LastScan.Text = (L 'Último escaneo: ' 'Last scan: ') + (Get-Date).ToString((Get-DateFmt) + ' HH:mm')
             if ($script:AutoRound) { Start-AutoUpdates }
         })
     }
 
     function Scan-WU {
-        [void](Start-Bg 'WU' 'Buscando en Windows Update' $script:JobWUScan $null {
+        [void](Start-Bg 'WU' (L 'Buscando en Windows Update' 'Checking Windows Update') $script:JobWUScan $null {
             param($out, $err)
             if ($err) {
                 $script:NumWU.Text = '!'; $script:NumDrivers.Text = '!'
-                if ($err -match '8024402C|80072EE7|80072EFD|80072EE2|8024401C') { $err = 'Sin conexión a internet o Windows Update no responde. Se volverá a intentar en la próxima revisión.' }
-                $script:SubWU.Text = 'No se pudo revisar'
-                Add-History 'Escanear Windows Update' "Error: $err"
+                if ($err -match '8024402C|80072EE7|80072EFD|80072EE2|8024401C') { $err = L 'Sin conexión a internet o Windows Update no responde. Se volverá a intentar en la próxima revisión.' 'No internet connection or Windows Update is not responding. It will try again at the next check.' }
+                $script:SubWU.Text = L 'No se pudo revisar' 'Could not check'
+                Add-History (L 'Escanear Windows Update' 'Scan Windows Update') "Error: $err"
                 return
             }
             $st = $out | Where-Object { $_.IsStatus } | Select-Object -Last 1
@@ -2816,11 +3021,11 @@ try {
                 if ([double]$u.SizeMB -gt 0) { $it.Size = ('{0:N1} MB' -f [double]$u.SizeMB) } else { $it.Size = '' }
                 $it.PendingReboot = [bool]$u.PendingReboot
                 if ($it.PendingReboot) {
-                    $it.StatusText = 'Instalada · falta reiniciar'; $it.StatusColor = $script:C.Blue
-                    $it.Note = 'Se termina de aplicar al reiniciar'
+                    $it.StatusText = L 'Instalada · falta reiniciar' 'Installed · restart needed'; $it.StatusColor = $script:C.Blue
+                    $it.Note = L 'Se termina de aplicar al reiniciar' 'Finishes applying after a restart'
                 } elseif ($u.FailDate) {
-                    $it.StatusText = 'Falló antes'; $it.StatusColor = $script:C.Red
-                    $it.Note = 'Falló el ' + ([datetime]$u.FailDate).ToString('dd/MM/yyyy')
+                    $it.StatusText = L 'Falló antes' 'Failed before'; $it.StatusColor = $script:C.Red
+                    $it.Note = (L 'Falló el ' 'Failed on ') + ([datetime]$u.FailDate).ToString((Get-DateFmt))
                     if ([int]$u.FailCode -ne 0) { $it.Note += (' (0x{0:X8})' -f [int]$u.FailCode) }
                 }
                 Set-StatusBrush $it
@@ -2831,43 +3036,43 @@ try {
             Refresh-WU; Update-Summary; Rebuild-Devices
             $nw = @($script:WUItems | Where-Object { -not $_.IsDriver }).Count
             $nd = @($script:WUItems | Where-Object { $_.IsDriver }).Count
-            $msg = "$nw de Windows, $nd drivers"
-            if ($script:WURebootItems.Count -gt 0) { $msg += ", $($script:WURebootItems.Count) esperan reinicio" }
-            elseif ($script:RebootPending) { $msg += ', reinicio pendiente' }
-            Add-History 'Escanear Windows Update' $msg
+            $msg = (L '{0} de Windows, {1} drivers' '{0} for Windows, {1} drivers') -f $nw, $nd
+            if ($script:WURebootItems.Count -gt 0) { $msg += (L ', {0} esperan reinicio' ', {0} waiting for restart') -f $script:WURebootItems.Count }
+            elseif ($script:RebootPending) { $msg += L ', reinicio pendiente' ', restart pending' }
+            Add-History (L 'Escanear Windows Update' 'Scan Windows Update') $msg
         })
     }
 
     function Scan-Devices {
-        [void](Start-Bg 'Devices' 'Revisando dispositivos' $script:JobDeviceScan $null {
+        [void](Start-Bg 'Devices' (L 'Revisando dispositivos' 'Checking devices') $script:JobDeviceScan $null {
             param($out, $err)
-            if ($err) { Add-History 'Revisar dispositivos' "Error: $err"; return }
+            if ($err) { Add-History (L 'Revisar dispositivos' 'Check devices') "Error: $err"; return }
             $script:RawDevices = @($out)
             $script:Scanned.Devices = $true
             Rebuild-Devices
-            Add-History 'Revisar dispositivos' ("{0} dispositivos revisados" -f $script:DeviceItems.Count)
+            Add-History (L 'Revisar dispositivos' 'Check devices') ((L '{0} dispositivos revisados' '{0} devices checked') -f $script:DeviceItems.Count)
             Check-Nvidia
         })
     }
 
     function Scan-Health {
-        [void](Start-Bg 'Health' 'Revisando salud y seguridad' $script:JobHealth $null {
+        [void](Start-Bg 'Health' (L 'Revisando salud y seguridad' 'Checking health and security') $script:JobHealth $null {
             param($out, $err)
-            if ($err) { $script:NumHealth.Text = '!'; Add-History 'Revisar salud' "Error: $err"; return }
+            if ($err) { $script:NumHealth.Text = '!'; Add-History (L 'Revisar salud' 'Check health') "Error: $err"; return }
             $script:HealthRows = ConvertTo-HealthRows @($out)
             $script:Scanned.Health = $true
             $script:GridHealth.ItemsSource = @($script:HealthRows)
             Update-Summary
             $n = @($script:HealthRows | Where-Object { $_.Level -ge 1 }).Count
-            Add-History 'Revisar salud y seguridad' "$n aviso(s)"
+            Add-History (L 'Revisar salud y seguridad' 'Check health and security') ((L '{0} aviso(s)' '{0} warning(s)') -f $n)
         })
     }
 
     function Scan-Clean {
         if (Test-AnyRunning @('CleanRun')) { return }
-        foreach ($c in $script:CleanItems) { $c.SizeText = 'Calculando...' }
+        foreach ($c in $script:CleanItems) { $c.SizeText = L 'Calculando...' 'Calculating...' }
         Refresh-Clean
-        [void](Start-Bg 'Clean' 'Calculando espacio a liberar' $script:JobCleanScan $null {
+        [void](Start-Bg 'Clean' (L 'Calculando espacio a liberar' 'Calculating space to free') $script:JobCleanScan $null {
             param($out, $err)
             foreach ($r in $out) {
                 $ci = $script:CleanItems | Where-Object { $_.Key -eq $r.Key } | Select-Object -First 1
@@ -2887,37 +3092,37 @@ try {
     function Invoke-WithRestorePoint([string]$next) {
         $script:PendingNext = $next
         if (-not $script:Config.RestorePoint) { Continue-Pending; return }
-        Add-TaskRow 'restore' 'Punto de restauración'
+        Add-TaskRow 'restore' (L 'Punto de restauración' 'Restore point')
         if (-not $script:IsAdmin) {
-            Set-TaskRow 'restore' 'Omitido' $script:C.Gray 'Hace falta abrir la app como administrador'
+            Set-TaskRow 'restore' (L 'Omitido' 'Skipped') $script:C.Gray (L 'Hace falta abrir la app como administrador' 'The app must be opened as administrator')
             Continue-Pending; return
         }
         Start-RestorePoint $false
     }
 
     function Start-RestorePoint([bool]$allowEnable) {
-        Set-TaskRow 'restore' 'Creando...' $script:C.Amber 'Puede tardar un minuto'
-        [void](Start-Bg 'Restore' 'Creando punto de restauración' $script:JobRestorePoint @('Revix PC - antes de actualizar', $allowEnable) {
+        Set-TaskRow 'restore' (L 'Creando...' 'Creating...') $script:C.Amber (L 'Puede tardar un minuto' 'May take a minute')
+        [void](Start-Bg 'Restore' (L 'Creando punto de restauración' 'Creating restore point') $script:JobRestorePoint @((L 'Revix PC - antes de actualizar' 'Revix PC - before updating'), $allowEnable) {
             param($out, $err)
             $r = $out | Select-Object -Last 1
             if (-not $err -and $r -and $r.NeedEnable) {
-                $ans = Show-Msg "La protección del sistema está apagada en la unidad $env:SystemDrive, así que no se pueden crear puntos de restauración.`n`n¿Quieres que Revix PC la encienda? Usa algo de espacio del disco (Windows lo administra solo) y te permite deshacer cambios con 'Restaurar sistema'." 'Question' 'YesNo'
+                $ans = Show-Msg ((L "La protección del sistema está apagada en la unidad {0}, así que no se pueden crear puntos de restauración.`n`n¿Quieres que Revix PC la encienda? Usa algo de espacio del disco (Windows lo administra solo) y te permite deshacer cambios con 'Restaurar sistema'." "System Protection is off on drive {0}, so restore points can't be created.`n`nDo you want Revix PC to turn it on? It uses some disk space (Windows manages it) and lets you undo changes with 'System Restore'.") -f $env:SystemDrive) 'Question' 'YesNo'
                 if ($ans -eq 'Yes') { Start-RestorePoint $true; return }
-                Set-TaskRow 'restore' 'Omitido' $script:C.Gray 'La protección del sistema está apagada'
-                Add-History 'Punto de restauración' 'Omitido: protección del sistema apagada'
-                $ans2 = Show-Msg '¿Continuar sin punto de restauración?' 'Warning' 'YesNo'
-                if ($ans2 -ne 'Yes') { Set-QueuedCancelled; $script:TaskHeader.Text = 'Cancelado'; return }
+                Set-TaskRow 'restore' (L 'Omitido' 'Skipped') $script:C.Gray (L 'La protección del sistema está apagada' 'System Protection is off')
+                Add-History (L 'Punto de restauración' 'Restore point') (L 'Omitido: protección del sistema apagada' 'Skipped: System Protection is off')
+                $ans2 = Show-Msg (L '¿Continuar sin punto de restauración?' 'Continue without a restore point?') 'Warning' 'YesNo'
+                if ($ans2 -ne 'Yes') { Set-QueuedCancelled; $script:TaskHeader.Text = L 'Cancelado' 'Cancelled'; return }
                 Continue-Pending; return
             }
             if ($err) {
-                Set-TaskRow 'restore' 'No se pudo' $script:C.Red $err
-                Add-History 'Punto de restauración' "Error: $err"
-                $ans = Show-Msg "No se pudo crear el punto de restauración:`n$err`n`n¿Continuar sin él?" 'Warning' 'YesNo'
-                if ($ans -ne 'Yes') { Set-QueuedCancelled; $script:TaskHeader.Text = 'Cancelado'; return }
+                Set-TaskRow 'restore' (L 'No se pudo' 'Failed') $script:C.Red $err
+                Add-History (L 'Punto de restauración' 'Restore point') "Error: $err"
+                $ans = Show-Msg ((L "No se pudo crear el punto de restauración:`n{0}`n`n¿Continuar sin él?" "The restore point could not be created:`n{0}`n`nContinue without it?") -f $err) 'Warning' 'YesNo'
+                if ($ans -ne 'Yes') { Set-QueuedCancelled; $script:TaskHeader.Text = L 'Cancelado' 'Cancelled'; return }
             } else {
-                $d = ''; if ($r -and $r.Enabled) { $d = "Se encendió la protección del sistema en $env:SystemDrive" }
-                Set-TaskRow 'restore' 'Creado' $script:C.Green $d
-                Add-History 'Punto de restauración' ('Creado ' + $d).Trim()
+                $d = ''; if ($r -and $r.Enabled) { $d = (L 'Se encendió la protección del sistema en {0}' 'System Protection was turned on for {0}') -f $env:SystemDrive }
+                Set-TaskRow 'restore' (L 'Creado' 'Created') $script:C.Green $d
+                Add-History (L 'Punto de restauración' 'Restore point') ((L 'Creado ' 'Created ') + $d).Trim()
             }
             Continue-Pending
         })
@@ -2933,17 +3138,17 @@ try {
 
     # ---------- Programas ----------
     function Update-Programs($items) {
-        if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual (mira la pestaña Progreso).' | Out-Null; return }
+        if (Test-AnyRunning $script:WorkKinds) { Show-Msg (L 'Espera a que termine la tarea actual (mira la pestaña Progreso).' 'Wait for the current task to finish (see the Progress tab).') | Out-Null; return }
         $items = @($items | Where-Object { -not $_.Hidden })
-        if ($items.Count -eq 0) { Show-Msg 'No hay programas marcados para actualizar.' | Out-Null; return }
+        if ($items.Count -eq 0) { Show-Msg (L 'No hay programas marcados para actualizar.' 'No programs are selected for updating.') | Out-Null; return }
         $names = ($items | Select-Object -First 12 | ForEach-Object { '  • ' + $_.Name }) -join "`n"
-        if ($items.Count -gt 12) { $names += "`n  ... y $($items.Count - 12) más" }
-        $ans = Show-Msg "Se actualizarán $($items.Count) programa(s):`n`n$names`n`nCierra esos programas antes de continuar. Al seguir, se aceptan las licencias de esos programas. ¿Seguir?" 'Question' 'YesNo'
+        if ($items.Count -gt 12) { $names += (L "`n  ... y {0} más" "`n  ... and {0} more") -f ($items.Count - 12) }
+        $ans = Show-Msg ((L "Se actualizarán {0} programa(s):`n`n{1}`n`nCierra esos programas antes de continuar. Al seguir, se aceptan las licencias de esos programas. ¿Seguir?" "{0} program(s) will be updated:`n`n{1}`n`nClose those programs before continuing. By continuing, you accept those programs' licenses. Continue?") -f $items.Count, $names) 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
         Prepare-ProgInstall $items
         $script:SilentInstall = $false
         $script:Tasks.Clear(); Reset-Cancel
-        Show-ProgressTab "Actualizando $($items.Count) programa(s)"
+        Show-ProgressTab ((L 'Actualizando {0} programa(s)' 'Updating {0} program(s)') -f $items.Count)
         Invoke-WithRestorePoint 'Prog'
     }
 
@@ -2964,50 +3169,50 @@ try {
         Prepare-ProgInstall $items
         $script:SilentInstall = $true
         $script:Tasks.Clear(); Reset-Cancel
-        $script:TaskHeader.Text = "Actualización automática de $($items.Count) programa(s)"
+        $script:TaskHeader.Text = (L 'Actualización automática de {0} programa(s)' 'Automatic update of {0} program(s)') -f $items.Count
         Start-ProgInstall
     }
 
     function Start-ProgInstall {
         foreach ($id in $script:PendingProgIds) { Add-TaskRow $id $script:NameById[$id] }
-        [void](Start-Bg 'ProgInstall' "Actualizando programas" $script:JobWingetUpgrade @(, $script:PendingProgIds) {
+        [void](Start-Bg 'ProgInstall' (L 'Actualizando programas' 'Updating programs') $script:JobWingetUpgrade @(, $script:PendingProgIds) {
             param($out, $err)
             if ($err) {
-                Add-History 'Actualizar programas' "Error: $err"
+                Add-History (L 'Actualizar programas' 'Update programs') "Error: $err"
                 Set-QueuedCancelled
                 Show-Msg $err 'Warning' | Out-Null; return
             }
             $done = @($out | Where-Object { $_.Kind -eq 'done' })
             $ok = @($done | Where-Object { [int]$_.ExitCode -eq 0 }).Count
             $bad = $done.Count - $ok
-            $msg = "Actualizados: $ok"
-            if ($bad -gt 0) { $msg += "   ·   Con problemas: $bad" }
-            if ($out | Where-Object { $_.Kind -eq 'cancel' }) { $msg += '   ·   Cancelado' }
+            $msg = (L 'Actualizados: {0}' 'Updated: {0}') -f $ok
+            if ($bad -gt 0) { $msg += (L '   ·   Con problemas: {0}' '   ·   With problems: {0}') -f $bad }
+            if ($out | Where-Object { $_.Kind -eq 'cancel' }) { $msg += L '   ·   Cancelado' '   ·   Cancelled' }
             $script:TaskHeader.Text = $msg
             if ($script:SilentInstall) {
                 $names = @($done | Where-Object { [int]$_.ExitCode -eq 0 } | ForEach-Object { $script:NameById[[string]$_.Key] }) -join ', '
-                if ($names) { Show-Notify 'Programas actualizados automáticamente' $names }
+                if ($names) { Show-Notify (L 'Programas actualizados automáticamente' 'Programs updated automatically') $names }
                 $script:SilentInstall = $false
-            } elseif (-not $script:Window.IsVisible) { Show-Notify 'Actualización terminada' $msg }
+            } elseif (-not $script:Window.IsVisible) { Show-Notify (L 'Actualización terminada' 'Update finished') $msg }
             Scan-Programs
         } {
             param($o)
             $name = $script:NameById[[string]$o.Key]; if (-not $name) { $name = $o.Key }
             switch ($o.Kind) {
-                'start'  { Set-TaskRow $o.Key 'Instalando...' $script:C.Amber 'Descargando e instalando' }
+                'start'  { Set-TaskRow $o.Key (L 'Instalando...' 'Installing...') $script:C.Amber (L 'Descargando e instalando' 'Downloading and installing') }
                 'done'   {
                     if ([int]$o.ExitCode -eq 0) {
-                        Set-TaskRow $o.Key 'Correcto' $script:C.Green ''
+                        Set-TaskRow $o.Key (L 'Correcto' 'Done') $script:C.Green ''
                         $fv = $script:PendingFrom[[string]$o.Key]
                         if ($fv -and $fv.From -and $fv.From -notmatch '^(Unknown|Desconocid|<)' -and $fv.From -ne $fv.To) {
-                            $script:PrevVersions[[string]$o.Key] = @{ Name = $name; From = [string]$fv.From; To = [string]$fv.To; Date = (Get-Date).ToString('dd/MM/yyyy HH:mm') }
+                            $script:PrevVersions[[string]$o.Key] = @{ Name = $name; From = [string]$fv.From; To = [string]$fv.To; Date = (Get-Date).ToString((Get-DateFmt) + ' HH:mm') }
                             Save-Config
-                            Add-History "Actualizar $name" "Correcto ($($fv.From) -> $($fv.To))"
-                        } else { Add-History "Actualizar $name" 'Correcto' }
+                            Add-History ((L 'Actualizar {0}' 'Update {0}') -f $name) ((L 'Correcto ({0} -> {1})' 'Done ({0} -> {1})') -f $fv.From, $fv.To)
+                        } else { Add-History ((L 'Actualizar {0}' 'Update {0}') -f $name) (L 'Correcto' 'Done') }
                     }
                     else {
                         $d = (Get-WingetCodeText ([int]$o.ExitCode)); if ($o.Message) { $d += ' - ' + $o.Message }
-                        Set-TaskRow $o.Key 'Error' $script:C.Red $d; Add-History "Actualizar $name" "Error: $d"
+                        Set-TaskRow $o.Key 'Error' $script:C.Red $d; Add-History ((L 'Actualizar {0}' 'Update {0}') -f $name) "Error: $d"
                     }
                 }
                 'cancel' { Set-QueuedCancelled }
@@ -3025,33 +3230,33 @@ try {
     $script:BtnProgUpdateAll.Add_Click({ Update-Programs @($script:ProgramItems) })
     $script:BtnProgIgnore.Add_Click({
         $sel = @($script:ProgramItems | Where-Object { $_.Selected })
-        if ($sel.Count -eq 0) { Show-Msg 'Marca primero los programas que quieres ignorar siempre (o dejar de ignorar).' | Out-Null; return }
+        if ($sel.Count -eq 0) { Show-Msg (L 'Marca primero los programas que quieres ignorar siempre (o dejar de ignorar).' 'First select the programs you want to always ignore (or stop ignoring).') | Out-Null; return }
         foreach ($p in $sel) {
-            if ($p.Ignored) { $p.Ignored = $false; [void]$script:IgnoredIds.Remove($p.Id); Add-History "Dejar de ignorar $($p.Name)" '' }
-            else { $p.Ignored = $true; if (-not $script:IgnoredIds.Contains($p.Id)) { $script:IgnoredIds.Add($p.Id) }; Add-History "Ignorar $($p.Name)" 'No se mostrará más' }
+            if ($p.Ignored) { $p.Ignored = $false; [void]$script:IgnoredIds.Remove($p.Id); Add-History ((L 'Dejar de ignorar {0}' 'Stop ignoring {0}') -f $p.Name) '' }
+            else { $p.Ignored = $true; if (-not $script:IgnoredIds.Contains($p.Id)) { $script:IgnoredIds.Add($p.Id) }; Add-History ((L 'Ignorar {0}' 'Ignore {0}') -f $p.Name) (L 'No se mostrará más' 'Will no longer be shown') }
             $p.Selected = $false
         }
         Save-Config; Refresh-Programs; Update-Summary; Update-TrayText
     })
     $script:BtnProgSkip.Add_Click({
         $sel = @($script:ProgramItems | Where-Object { $_.Selected })
-        if ($sel.Count -eq 0) { Show-Msg 'Marca los programas cuya versión nueva quieres saltar. Volverán a aparecer cuando salga una versión más nueva.' | Out-Null; return }
+        if ($sel.Count -eq 0) { Show-Msg (L 'Marca los programas cuya versión nueva quieres saltar. Volverán a aparecer cuando salga una versión más nueva.' 'Select the programs whose new version you want to skip. They will show up again when a newer version comes out.') | Out-Null; return }
         foreach ($p in $sel) {
-            if ($p.Skipped) { $p.Skipped = $false; [void]$script:Skipped.Remove($p.Id); Add-History "Quitar salto de $($p.Name)" '' }
-            else { $p.Skipped = $true; $script:Skipped[$p.Id] = $p.Available; Add-History "Saltar $($p.Name) $($p.Available)" 'Volverá a avisar con la siguiente versión' }
+            if ($p.Skipped) { $p.Skipped = $false; [void]$script:Skipped.Remove($p.Id); Add-History ((L 'Quitar salto de {0}' 'Unskip {0}') -f $p.Name) '' }
+            else { $p.Skipped = $true; $script:Skipped[$p.Id] = $p.Available; Add-History ((L 'Saltar {0} {1}' 'Skip {0} {1}') -f $p.Name, $p.Available) (L 'Volverá a avisar con la siguiente versión' 'Will notify again with the next version') }
             $p.Selected = $false
         }
         Save-Config; Refresh-Programs; Update-Summary; Update-TrayText
     })
     $script:ChkShowIgnored.Add_Click({ Refresh-Programs })
     $script:BtnStore.Add_Click({
-        [void](Start-Bg 'Store' 'Pidiendo a la Store que busque actualizaciones' $script:JobStore $null {
+        [void](Start-Bg 'Store' (L 'Pidiendo a la Store que busque actualizaciones' 'Asking the Store to look for updates') $script:JobStore $null {
             param($out, $err)
-            if ($err) { Add-History 'Actualizar apps de la Store' 'Se abrió la Store para hacerlo manualmente' }
-            else { Add-History 'Actualizar apps de la Store' 'La Store está buscando e instalando actualizaciones' }
+            if ($err) { Add-History (L 'Actualizar apps de la Store' 'Update Store apps') (L 'Se abrió la Store para hacerlo manualmente' 'The Store was opened to do it manually') }
+            else { Add-History (L 'Actualizar apps de la Store' 'Update Store apps') (L 'La Store está buscando e instalando actualizaciones' 'The Store is looking for and installing updates') }
         })
         Start-Process 'ms-windows-store://downloadsandupdates'
-        Show-Msg "Se abrió la Microsoft Store en 'Descargas y actualizaciones'. Pulsa 'Obtener actualizaciones' para actualizar las apps de la Store." | Out-Null
+        Show-Msg (L "Se abrió la Microsoft Store en 'Descargas y actualizaciones'. Pulsa 'Obtener actualizaciones' para actualizar las apps de la Store." "The Microsoft Store opened in 'Downloads and updates'. Click 'Get updates' to update your Store apps.") | Out-Null
     })
 
     # ---------- Windows Update ----------
@@ -3062,15 +3267,15 @@ try {
     })
     $script:BtnWUSettings.Add_Click({ Start-Process 'ms-settings:windowsupdate' })
     $script:BtnWUInstall.Add_Click({
-        if (-not $script:IsAdmin) { Show-Msg 'Para instalar actualizaciones de Windows abre Revix PC como administrador (acepta el aviso de Windows al abrirla).' 'Warning' | Out-Null; return }
-        if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual (mira la pestaña Progreso).' | Out-Null; return }
+        if (-not $script:IsAdmin) { Show-Msg (L 'Para instalar actualizaciones de Windows abre Revix PC como administrador (acepta el aviso de Windows al abrirla).' 'To install Windows updates, open Revix PC as administrator (accept the Windows prompt when opening it).') 'Warning' | Out-Null; return }
+        if (Test-AnyRunning $script:WorkKinds) { Show-Msg (L 'Espera a que termine la tarea actual (mira la pestaña Progreso).' 'Wait for the current task to finish (see the Progress tab).') | Out-Null; return }
         $sel = @($script:WUItems | Where-Object { $_.Selected })
-        if ($sel.Count -eq 0) { Show-Msg 'Marca primero las actualizaciones que quieres instalar.' | Out-Null; return }
-        $ans = Show-Msg "Se descargarán e instalarán $($sel.Count) actualización(es), una por una. Puede tardar y quizá pida reiniciar. ¿Seguir?" 'Question' 'YesNo'
+        if ($sel.Count -eq 0) { Show-Msg (L 'Marca primero las actualizaciones que quieres instalar.' 'First select the updates you want to install.') | Out-Null; return }
+        $ans = Show-Msg ((L '{0} actualización(es) se descargarán e instalarán, una por una. Puede tardar y quizá pida reiniciar. ¿Seguir?' '{0} update(s) will be downloaded and installed, one by one. It may take a while and may ask for a restart. Continue?') -f $sel.Count) 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
         $script:PendingWU = @($sel | ForEach-Object { @{ Id = $_.UpdateId; Title = $_.Title } })
         $script:Tasks.Clear(); Reset-Cancel
-        Show-ProgressTab "Instalando $($sel.Count) actualización(es) de Windows"
+        Show-ProgressTab ((L 'Instalando {0} actualización(es) de Windows' 'Installing {0} Windows update(s)') -f $sel.Count)
         Invoke-WithRestorePoint 'WU'
     })
 
@@ -3078,29 +3283,29 @@ try {
         $ids = [string[]]@($script:PendingWU | ForEach-Object { $_.Id })
         foreach ($u in $script:PendingWU) { Add-TaskRow $u.Id $u.Title }
         $script:WUReboot = $false
-        [void](Start-Bg 'WUInstall' 'Instalando actualizaciones de Windows' $script:JobWUInstall @(, $ids) {
+        [void](Start-Bg 'WUInstall' (L 'Instalando actualizaciones de Windows' 'Installing Windows updates') $script:JobWUInstall @(, $ids) {
             param($out, $err)
-            if ($err) { Add-History 'Instalar Windows Update' "Error: $err"; Set-QueuedCancelled; Show-Msg "No se pudo instalar:`n$err" 'Warning' | Out-Null; return }
+            if ($err) { Add-History (L 'Instalar Windows Update' 'Install Windows Update') "Error: $err"; Set-QueuedCancelled; Show-Msg ((L "No se pudo instalar:`n{0}" "Could not install:`n{0}") -f $err) 'Warning' | Out-Null; return }
             $done = @($out | Where-Object { $_.Kind -eq 'done' })
             $ok = @($done | Where-Object { $_.Ok }).Count
-            $msg = "Instaladas: $ok de $($done.Count)"
-            if ($out | Where-Object { $_.Kind -eq 'cancel' }) { $msg += '   ·   Cancelado' }
+            $msg = (L 'Instaladas: {0} de {1}' 'Installed: {0} of {1}') -f $ok, $done.Count
+            if ($out | Where-Object { $_.Kind -eq 'cancel' }) { $msg += L '   ·   Cancelado' '   ·   Cancelled' }
             $script:TaskHeader.Text = $msg
             if ($script:WUReboot) {
-                $ans = Show-Msg "$msg.`n`nWindows necesita reiniciar para terminar. Guarda tu trabajo. ¿Reiniciar ahora?" 'Question' 'YesNo'
+                $ans = Show-Msg ($msg + (L ".`n`nWindows necesita reiniciar para terminar. Guarda tu trabajo. ¿Reiniciar ahora?" ".`n`nWindows needs to restart to finish. Save your work. Restart now?")) 'Question' 'YesNo'
                 if ($ans -eq 'Yes') { Request-Restart }
-            } elseif (-not $script:Window.IsVisible) { Show-Notify 'Windows Update terminado' $msg }
+            } elseif (-not $script:Window.IsVisible) { Show-Notify (L 'Windows Update terminado' 'Windows Update finished') $msg }
             Scan-WU; Scan-Health
         } {
             param($o)
             switch ($o.Kind) {
-                'start'  { Set-TaskRow $o.Key 'Instalando...' $script:C.Amber 'Descargando e instalando' }
+                'start'  { Set-TaskRow $o.Key (L 'Instalando...' 'Installing...') $script:C.Amber (L 'Descargando e instalando' 'Downloading and installing') }
                 'done'   {
                     if ($o.Ok) { $col = $script:C.Green } else { $col = $script:C.Red }
-                    $d = ''; if ($o.Reboot) { $d = 'Necesita reiniciar'; $script:WUReboot = $true }
+                    $d = ''; if ($o.Reboot) { $d = L 'Necesita reiniciar' 'Needs a restart'; $script:WUReboot = $true }
                     Set-TaskRow $o.Key $o.Result $col $d
                     $t = $o.Title; if (-not $t) { $t = $o.Key }
-                    Add-History "Instalar $t" $o.Result
+                    Add-History ((L 'Instalar {0}' 'Install {0}') -f $t) $o.Result
                 }
                 'cancel' { Set-QueuedCancelled }
             }
@@ -3123,59 +3328,59 @@ try {
     $script:GridHealth.AddHandler([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $linkHandler)
 
     $script:BtnDrvBackup.Add_Click({
-        if (-not $script:IsAdmin) { Show-Msg 'Para respaldar drivers abre Revix PC como administrador.' 'Warning' | Out-Null; return }
-        if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual.' | Out-Null; return }
-        $dest = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ('Revix PC\Respaldo-drivers-' + (Get-Date).ToString('yyyyMMdd-HHmm'))
-        $ans = Show-Msg "Se guardará una copia de tus drivers (los que no vienen con Windows) en:`n`n$dest`n`n¿Continuar?" 'Question' 'YesNo'
+        if (-not $script:IsAdmin) { Show-Msg (L 'Para respaldar drivers abre Revix PC como administrador.' 'To back up drivers, open Revix PC as administrator.') 'Warning' | Out-Null; return }
+        if (Test-AnyRunning $script:WorkKinds) { Show-Msg (L 'Espera a que termine la tarea actual.' 'Wait for the current task to finish.') | Out-Null; return }
+        $dest = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ('Revix PC\' + (L 'Respaldo-drivers-' 'Driver-backup-') + (Get-Date).ToString('yyyyMMdd-HHmm'))
+        $ans = Show-Msg ((L "Se guardará una copia de tus drivers (los que no vienen con Windows) en:`n`n{0}`n`n¿Continuar?" "A copy of your drivers (the ones that don't come with Windows) will be saved to:`n`n{0}`n`nContinue?") -f $dest) 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
-        $script:Tasks.Clear(); Add-TaskRow 'backup' 'Respaldo de drivers'
-        Set-TaskRow 'backup' 'Copiando...' $script:C.Amber $dest
-        Show-ProgressTab 'Respaldando drivers'
-        [void](Start-Bg 'DrvBackup' 'Respaldando drivers' $script:JobDriverBackup @($dest) {
+        $script:Tasks.Clear(); Add-TaskRow 'backup' (L 'Respaldo de drivers' 'Driver backup')
+        Set-TaskRow 'backup' (L 'Copiando...' 'Copying...') $script:C.Amber $dest
+        Show-ProgressTab (L 'Respaldando drivers' 'Backing up drivers')
+        [void](Start-Bg 'DrvBackup' (L 'Respaldando drivers' 'Backing up drivers') $script:JobDriverBackup @($dest) {
             param($out, $err)
-            if ($err) { Set-TaskRow 'backup' 'Error' $script:C.Red $err; Add-History 'Respaldar drivers' "Error: $err"; return }
+            if ($err) { Set-TaskRow 'backup' 'Error' $script:C.Red $err; Add-History (L 'Respaldar drivers' 'Back up drivers') "Error: $err"; return }
             $r = $out | Select-Object -First 1
-            Set-TaskRow 'backup' 'Listo' $script:C.Green "$($r.Count) drivers en $($r.Dest)"
-            $script:TaskHeader.Text = "Respaldo listo: $($r.Count) drivers"
-            Add-History 'Respaldar drivers' "$($r.Count) drivers en $($r.Dest)"
+            Set-TaskRow 'backup' (L 'Listo' 'Done') $script:C.Green ((L '{0} drivers en {1}' '{0} drivers in {1}') -f $r.Count, $r.Dest)
+            $script:TaskHeader.Text = (L 'Respaldo listo: {0} drivers' 'Backup ready: {0} drivers') -f $r.Count
+            Add-History (L 'Respaldar drivers' 'Back up drivers') ((L '{0} drivers en {1}' '{0} drivers in {1}') -f $r.Count, $r.Dest)
             Start-Process explorer.exe $r.Dest
         })
     })
 
     $script:BtnDrvRestore.Add_Click({
-        if (-not $script:IsAdmin) { Show-Msg 'Para restaurar drivers abre Revix PC como administrador.' 'Warning' | Out-Null; return }
-        if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual.' | Out-Null; return }
+        if (-not $script:IsAdmin) { Show-Msg (L 'Para restaurar drivers abre Revix PC como administrador.' 'To restore drivers, open Revix PC as administrator.') 'Warning' | Out-Null; return }
+        if (Test-AnyRunning $script:WorkKinds) { Show-Msg (L 'Espera a que termine la tarea actual.' 'Wait for the current task to finish.') | Out-Null; return }
         $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dlg.Description = 'Elige la carpeta del respaldo de drivers (Respaldo-drivers-...)'
+        $dlg.Description = L 'Elige la carpeta del respaldo de drivers (Respaldo-drivers-...)' 'Choose the driver backup folder (Driver-backup-... or Respaldo-drivers-...)'
         $def = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Revix PC'
         if (Test-Path $def) { $dlg.SelectedPath = $def }
         if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
         $script:PendingDrvFolder = $dlg.SelectedPath
         $infs = @(Get-ChildItem -LiteralPath $script:PendingDrvFolder -Filter *.inf -Recurse -ErrorAction SilentlyContinue)
-        if ($infs.Count -eq 0) { Show-Msg 'Esa carpeta no tiene drivers (archivos .inf).' 'Warning' | Out-Null; return }
-        $ans = Show-Msg "Se instalarán $($infs.Count) driver(s) desde:`n$($script:PendingDrvFolder)`n`nInstala solo respaldos tuyos o de fuentes de confianza. ¿Continuar?" 'Question' 'YesNo'
+        if ($infs.Count -eq 0) { Show-Msg (L 'Esa carpeta no tiene drivers (archivos .inf).' 'That folder has no drivers (.inf files).') 'Warning' | Out-Null; return }
+        $ans = Show-Msg ((L "Se instalarán {0} driver(s) desde:`n{1}`n`nInstala solo respaldos tuyos o de fuentes de confianza. ¿Continuar?" "{0} driver(s) will be installed from:`n{1}`n`nOnly install your own backups or ones from trusted sources. Continue?") -f $infs.Count, $script:PendingDrvFolder) 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
-        $script:Tasks.Clear(); Show-ProgressTab 'Restaurando drivers'
+        $script:Tasks.Clear(); Show-ProgressTab (L 'Restaurando drivers' 'Restoring drivers')
         Invoke-WithRestorePoint 'DrvRestore'
     })
 
     function Start-DriverRestore {
-        Add-TaskRow 'drvrestore' 'Restaurar drivers'
-        Set-TaskRow 'drvrestore' 'Instalando...' $script:C.Amber $script:PendingDrvFolder
-        [void](Start-Bg 'DrvRestore' 'Restaurando drivers' $script:JobDriverRestore @($script:PendingDrvFolder) {
+        Add-TaskRow 'drvrestore' (L 'Restaurar drivers' 'Restore drivers')
+        Set-TaskRow 'drvrestore' (L 'Instalando...' 'Installing...') $script:C.Amber $script:PendingDrvFolder
+        [void](Start-Bg 'DrvRestore' (L 'Restaurando drivers' 'Restoring drivers') $script:JobDriverRestore @($script:PendingDrvFolder) {
             param($out, $err)
-            if ($err) { Set-TaskRow 'drvrestore' 'Error' $script:C.Red $err; Add-History 'Restaurar drivers' "Error: $err"; return }
+            if ($err) { Set-TaskRow 'drvrestore' 'Error' $script:C.Red $err; Add-History (L 'Restaurar drivers' 'Restore drivers') "Error: $err"; return }
             $r = $out | Select-Object -First 1
             $code = [int]$r.ExitCode
             if ($code -eq 0 -or $code -eq 3010) {
-                $d = ''; if ($code -eq 3010) { $d = 'Reinicia la PC para terminar' }
-                Set-TaskRow 'drvrestore' 'Listo' $script:C.Green $d
-                Add-History 'Restaurar drivers' ('Correcto ' + $d)
+                $d = ''; if ($code -eq 3010) { $d = L 'Reinicia la PC para terminar' 'Restart the PC to finish' }
+                Set-TaskRow 'drvrestore' (L 'Listo' 'Done') $script:C.Green $d
+                Add-History (L 'Restaurar drivers' 'Restore drivers') (((L 'Correcto ' 'Done ') + $d).Trim())
             } else {
-                Set-TaskRow 'drvrestore' "Terminó con código $code" $script:C.Amber 'Algunos drivers pueden no aplicar a este equipo'
-                Add-History 'Restaurar drivers' "Código $code"
+                Set-TaskRow 'drvrestore' ((L 'Terminó con código {0}' 'Finished with code {0}') -f $code) $script:C.Amber (L 'Algunos drivers pueden no aplicar a este equipo' 'Some drivers may not apply to this PC')
+                Add-History (L 'Restaurar drivers' 'Restore drivers') ((L 'Código {0}' 'Code {0}') -f $code)
             }
-            $script:TaskHeader.Text = 'Restauración terminada'
+            $script:TaskHeader.Text = L 'Restauración terminada' 'Restore finished'
             Scan-Devices
         })
     }
@@ -3184,10 +3389,10 @@ try {
     $script:BtnHealthScan.Add_Click({ Scan-Health })
     $script:BtnSecurity.Add_Click({ Start-Process 'windowsdefender:' })
     $script:BtnDefender.Add_Click({
-        [void](Start-Bg 'Defender' 'Actualizando firmas de Defender' $script:JobDefender $null {
+        [void](Start-Bg 'Defender' (L 'Actualizando firmas de Defender' 'Updating Defender signatures') $script:JobDefender $null {
             param($out, $err)
-            if ($err) { Add-History 'Actualizar firmas de Defender' "Error: $err"; Show-Msg "No se pudo actualizar:`n$err" 'Warning' | Out-Null; return }
-            Add-History 'Actualizar firmas de Defender' 'Correcto'
+            if ($err) { Add-History (L 'Actualizar firmas de Defender' 'Update Defender signatures') "Error: $err"; Show-Msg ((L "No se pudo actualizar:`n{0}" "Could not update:`n{0}") -f $err) 'Warning' | Out-Null; return }
+            Add-History (L 'Actualizar firmas de Defender' 'Update Defender signatures') (L 'Correcto' 'Done')
             Scan-Health
         })
     })
@@ -3199,37 +3404,37 @@ try {
         if ($e.OriginalSource -is [System.Windows.Controls.CheckBox]) {
             $sum = 0.0
             foreach ($c in $script:CleanItems) { if ($c.Selected -and $c.Bytes -gt 0) { $sum += $c.Bytes } }
-            if ($script:Scanned.Clean) { $script:CleanTotal.Text = 'Se pueden liberar: ' + (Format-Bytes $sum) }
+            if ($script:Scanned.Clean) { $script:CleanTotal.Text = (L 'Se pueden liberar: ' 'Can be freed: ') + (Format-Bytes $sum) }
         }
     })
     $script:BtnCleanRun.Add_Click({
-        if (Test-AnyRunning ($script:WorkKinds + 'CleanRun')) { Show-Msg 'Espera a que termine la tarea actual.' | Out-Null; return }
+        if (Test-AnyRunning ($script:WorkKinds + 'CleanRun')) { Show-Msg (L 'Espera a que termine la tarea actual.' 'Wait for the current task to finish.') | Out-Null; return }
         $sel = @($script:CleanItems | Where-Object { $_.Selected })
-        if ($sel.Count -eq 0) { Show-Msg 'Marca qué quieres limpiar.' | Out-Null; return }
+        if ($sel.Count -eq 0) { Show-Msg (L 'Marca qué quieres limpiar.' 'Select what you want to clean.') | Out-Null; return }
         $list = ($sel | ForEach-Object { '  • ' + $_.Name + '  (' + $_.SizeText + ')' }) -join "`n"
         $warn = ''
-        if ($sel | Where-Object { $_.Key -eq 'RecycleBin' }) { $warn += "`n`nOjo: la papelera se vacía definitivamente." }
-        if ($sel | Where-Object { $_.Key -eq 'Components' }) { $warn += "`nLos componentes viejos de Windows tardan varios minutos y después no podrás desinstalar actualizaciones ya instaladas." }
-        $ans = Show-Msg "Se limpiará:`n`n$list$warn`n`n¿Continuar?" 'Question' 'YesNo'
+        if ($sel | Where-Object { $_.Key -eq 'RecycleBin' }) { $warn += L "`n`nOjo: la papelera se vacía definitivamente." "`n`nNote: the Recycle Bin is emptied permanently." }
+        if ($sel | Where-Object { $_.Key -eq 'Components' }) { $warn += L "`nLos componentes viejos de Windows tardan varios minutos y después no podrás desinstalar actualizaciones ya instaladas." "`nOld Windows components take several minutes, and afterwards you won't be able to uninstall updates that are already installed." }
+        $ans = Show-Msg ((L "Se limpiará:`n`n{0}{1}`n`n¿Continuar?" "This will be cleaned:`n`n{0}{1}`n`nContinue?") -f $list, $warn) 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
         $keys = [string[]]@($sel | ForEach-Object { $_.Key })
         $script:Tasks.Clear(); Reset-Cancel
         foreach ($c in $sel) { Add-TaskRow $c.Key $c.Name }
-        Show-ProgressTab 'Limpiando'
+        Show-ProgressTab (L 'Limpiando' 'Cleaning')
         $script:CleanFreed = 0.0
-        [void](Start-Bg 'CleanRun' 'Limpiando' $script:JobClean @(, $keys) {
+        [void](Start-Bg 'CleanRun' (L 'Limpiando' 'Cleaning') $script:JobClean @(, $keys) {
             param($out, $err)
-            if ($err) { Add-History 'Limpieza' "Error: $err"; Set-QueuedCancelled; return }
-            $msg = 'Espacio liberado: ' + (Format-Bytes $script:CleanFreed)
+            if ($err) { Add-History (L 'Limpieza' 'Cleanup') "Error: $err"; Set-QueuedCancelled; return }
+            $msg = (L 'Espacio liberado: ' 'Space freed: ') + (Format-Bytes $script:CleanFreed)
             $script:TaskHeader.Text = $msg
-            Add-History 'Limpieza' $msg
+            Add-History (L 'Limpieza' 'Cleanup') $msg
             Scan-Clean
         } {
             param($o)
             switch ($o.Kind) {
-                'start'  { Set-TaskRow $o.Key 'Limpiando...' $script:C.Amber '' }
+                'start'  { Set-TaskRow $o.Key (L 'Limpiando...' 'Cleaning...') $script:C.Amber '' }
                 'done'   {
-                    if ($o.Ok) { $script:CleanFreed += [double]$o.Freed; Set-TaskRow $o.Key 'Listo' $script:C.Green ('Liberado: ' + (Format-Bytes ([double]$o.Freed))) }
+                    if ($o.Ok) { $script:CleanFreed += [double]$o.Freed; Set-TaskRow $o.Key (L 'Listo' 'Done') $script:C.Green ((L 'Liberado: ' 'Freed: ') + (Format-Bytes ([double]$o.Freed))) }
                     else { Set-TaskRow $o.Key 'Error' $script:C.Red $o.Message }
                 }
                 'cancel' { Set-QueuedCancelled }
@@ -3241,12 +3446,12 @@ try {
     $script:GridTasks.ItemsSource = $script:Tasks
     $script:BtnCancel.Add_Click({
         try { New-Item -ItemType File -Path (Get-CancelFile) -Force | Out-Null } catch {}
-        $script:TaskHeader.Text = 'Cancelando... (se detendrá al terminar el elemento actual)'
+        $script:TaskHeader.Text = L 'Cancelando... (se detendrá al terminar el elemento actual)' 'Cancelling... (it will stop after the current item)'
         $script:BtnCancel.IsEnabled = $false
     })
     $script:BtnClearTasks.Add_Click({
         if (Test-AnyRunning ($script:WorkKinds + 'CleanRun')) { return }
-        $script:Tasks.Clear(); $script:TaskHeader.Text = 'Sin tareas en curso'
+        $script:Tasks.Clear(); $script:TaskHeader.Text = L 'Sin tareas en curso' 'No tasks running'
     })
 
     # ---------- Reporte HTML ----------
@@ -3254,54 +3459,57 @@ try {
         $enc = { param($s) [System.Net.WebUtility]::HtmlEncode([string]$s) }
         $pill = { param($text, $color) if (-not $text) { return '' }; "<span class='pill' style='background:$color'>$([System.Net.WebUtility]::HtmlEncode([string]$text))</span>" }
         $sb = New-Object System.Text.StringBuilder
-        [void]$sb.Append('<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>Reporte Revix PC</title><style>')
+        $rt = L 'Reporte Revix PC' 'Revix PC report'
+        $nsc = "<p class='muted'>" + (L 'No escaneado.' 'Not scanned.') + '</p>'
+        $nok = "<p class='muted'>" + (L 'Todo al día.' 'All up to date.') + '</p>'
+        [void]$sb.Append("<!DOCTYPE html><html lang=`"$($script:Lang)`"><head><meta charset=`"utf-8`"><title>$rt</title><style>")
         [void]$sb.Append('body{font-family:Segoe UI,Arial,sans-serif;background:#111318;color:#e5e7eb;margin:32px}h1{margin:0}h2{margin-top:32px;border-bottom:1px solid #2a2f3a;padding-bottom:6px}')
         [void]$sb.Append('.muted{color:#9ca3af}table{border-collapse:collapse;width:100%;margin-top:10px}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #2a2f3a;font-size:14px}th{color:#9ca3af;background:#1a1d24}')
         [void]$sb.Append('.pill{color:#fff;padding:2px 9px;border-radius:9px;font-size:12.5px;font-weight:600;white-space:nowrap}')
         [void]$sb.Append('</style></head><body>')
-        [void]$sb.Append("<h1>Reporte Revix PC</h1><p class='muted'>$($env:COMPUTERNAME) · $((Get-Date).ToString('dd/MM/yyyy HH:mm')) · Revix PC $($script:AppVersion)</p>")
+        [void]$sb.Append("<h1>$rt</h1><p class='muted'>$($env:COMPUTERNAME) · $((Get-Date).ToString((Get-DateFmt) + ' HH:mm')) · Revix PC $($script:AppVersion)</p>")
 
-        [void]$sb.Append('<h2>Programas por actualizar</h2>')
+        [void]$sb.Append('<h2>' + (L 'Programas por actualizar' 'Programs to update') + '</h2>')
         $progs = @($script:ProgramItems | Where-Object { -not $_.Hidden })
-        if (-not $script:Scanned.Programs) { [void]$sb.Append("<p class='muted'>No escaneado.</p>") }
-        elseif ($progs.Count -eq 0) { [void]$sb.Append("<p class='muted'>Todo al día.</p>") }
+        if (-not $script:Scanned.Programs) { [void]$sb.Append($nsc) }
+        elseif ($progs.Count -eq 0) { [void]$sb.Append($nok) }
         else {
-            [void]$sb.Append('<table><tr><th>Programa</th><th>Versión actual</th><th>Nueva versión</th></tr>')
+            [void]$sb.Append((L '<table><tr><th>Programa</th><th>Versión actual</th><th>Nueva versión</th></tr>' '<table><tr><th>Program</th><th>Current version</th><th>New version</th></tr>'))
             foreach ($p in $progs) { [void]$sb.Append("<tr><td>$(& $enc $p.Name)</td><td>$(& $enc $p.Version)</td><td>$(& $enc $p.Available)</td></tr>") }
             [void]$sb.Append('</table>')
         }
         [void]$sb.Append('<h2>Windows Update</h2>')
-        if (-not $script:Scanned.WU) { [void]$sb.Append("<p class='muted'>No escaneado.</p>") }
-        elseif ($script:WUItems.Count -eq 0) { [void]$sb.Append("<p class='muted'>Todo al día.</p>") }
+        if (-not $script:Scanned.WU) { [void]$sb.Append($nsc) }
+        elseif ($script:WUItems.Count -eq 0) { [void]$sb.Append($nok) }
         else {
-            [void]$sb.Append('<table><tr><th>Actualización</th><th>Tipo</th><th>Gravedad</th><th>Tamaño</th></tr>')
+            [void]$sb.Append((L '<table><tr><th>Actualización</th><th>Tipo</th><th>Gravedad</th><th>Tamaño</th></tr>' '<table><tr><th>Update</th><th>Type</th><th>Severity</th><th>Size</th></tr>'))
             foreach ($u in $script:WUItems) { [void]$sb.Append("<tr><td>$(& $enc $u.Title)</td><td>$(& $enc $u.Kind)</td><td>$(& $enc $u.Severity)</td><td>$(& $enc $u.Size)</td></tr>") }
             [void]$sb.Append('</table>')
         }
-        [void]$sb.Append('<h2>Salud y seguridad</h2>')
-        if (-not $script:Scanned.Health) { [void]$sb.Append("<p class='muted'>No revisado.</p>") }
+        [void]$sb.Append('<h2>' + (L 'Salud y seguridad' 'Health and security') + '</h2>')
+        if (-not $script:Scanned.Health) { [void]$sb.Append("<p class='muted'>" + (L 'No revisado.' 'Not checked.') + '</p>') }
         else {
-            [void]$sb.Append('<table><tr><th>Área</th><th>Elemento</th><th>Detalle</th><th>Estado</th></tr>')
+            [void]$sb.Append((L '<table><tr><th>Área</th><th>Elemento</th><th>Detalle</th><th>Estado</th></tr>' '<table><tr><th>Area</th><th>Item</th><th>Details</th><th>Status</th></tr>'))
             foreach ($h in $script:HealthRows) { [void]$sb.Append("<tr><td>$(& $enc $h.Section)</td><td>$(& $enc $h.Item)</td><td>$(& $enc $h.Value)</td><td>$(& $pill $h.StatusText $h.StatusColor)</td></tr>") }
             [void]$sb.Append('</table>')
         }
-        [void]$sb.Append('<h2>Dispositivos</h2>')
-        if (-not $script:Scanned.Devices) { [void]$sb.Append("<p class='muted'>No escaneado.</p>") }
+        [void]$sb.Append('<h2>' + (L 'Dispositivos' 'Devices') + '</h2>')
+        if (-not $script:Scanned.Devices) { [void]$sb.Append($nsc) }
         else {
-            [void]$sb.Append('<table><tr><th>Estado</th><th>Dispositivo</th><th>Versión</th><th>Fecha</th><th>Nota</th></tr>')
+            [void]$sb.Append((L '<table><tr><th>Estado</th><th>Dispositivo</th><th>Versión</th><th>Fecha</th><th>Nota</th></tr>' '<table><tr><th>Status</th><th>Device</th><th>Version</th><th>Date</th><th>Note</th></tr>'))
             foreach ($d in @($script:DeviceItems | Where-Object { -not $_.IsGeneric })) { [void]$sb.Append("<tr><td>$(& $pill $d.StatusText $d.StatusColor)</td><td>$(& $enc $d.Name)</td><td>$(& $enc $d.Version)</td><td>$(& $enc $d.Date)</td><td>$(& $enc $d.Note)</td></tr>") }
             [void]$sb.Append('</table>')
         }
         if ($script:Scanned.Clean) {
-            [void]$sb.Append('<h2>Espacio que se puede liberar</h2><table><tr><th>Qué</th><th>Tamaño</th></tr>')
+            [void]$sb.Append((L '<h2>Espacio que se puede liberar</h2><table><tr><th>Qué</th><th>Tamaño</th></tr>' '<h2>Space that can be freed</h2><table><tr><th>What</th><th>Size</th></tr>'))
             foreach ($c in $script:CleanItems) { [void]$sb.Append("<tr><td>$(& $enc $c.Name)</td><td>$(& $enc $c.SizeText)</td></tr>") }
             [void]$sb.Append('</table>')
         }
         [void]$sb.Append('</body></html>')
         $desk = [Environment]::GetFolderPath('Desktop')
-        $file = Join-Path $desk ('Reporte-RevixPC-{0}.html' -f (Get-Date).ToString('yyyyMMdd-HHmm'))
+        $file = Join-Path $desk ((L 'Reporte-RevixPC-{0}.html' 'RevixPC-Report-{0}.html') -f (Get-Date).ToString('yyyyMMdd-HHmm'))
         [System.IO.File]::WriteAllText($file, $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
-        Add-History 'Exportar reporte' $file
+        Add-History (L 'Exportar reporte' 'Export report') $file
         Start-Process $file
     })
 
@@ -3332,7 +3540,7 @@ try {
         try {
             if (-not $on) { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue; return $true }
             $exe = Get-InstalledExe
-            if (-not (Test-Installed) -or -not (Test-Path -LiteralPath $exe)) { throw 'Para iniciar con Windows, instala Revix PC con el instalador (RevixPC-Setup).' }
+            if (-not (Test-Installed) -or -not (Test-Path -LiteralPath $exe)) { throw (L 'Para iniciar con Windows, instala Revix PC con el instalador (RevixPC-Setup).' 'To start with Windows, install Revix PC with the installer (RevixPC-Setup).') }
             $user = "$env:USERDOMAIN\$env:USERNAME"
             $act = New-ScheduledTaskAction -Execute $exe -Argument '-Tray'
             $trg = New-ScheduledTaskTrigger -AtLogOn -User $user
@@ -3342,16 +3550,16 @@ try {
             return $true
         } catch {
             Write-ErrorLog "startup: $_"
-            Show-Msg "No se pudo configurar el inicio con Windows:`n$($_.Exception.Message)" 'Warning' | Out-Null
+            Show-Msg ((L "No se pudo configurar el inicio con Windows:`n{0}" "Could not set up starting with Windows:`n{0}") -f $_.Exception.Message) 'Warning' | Out-Null
             return $false
         }
     }
 
     function Update-InstallInfo {
         $s = Get-SetupInfo
-        if (Test-RunningInstalled) { $script:InstallInfo.Text = "Instalada en $($s.Dir). Puedes anclar el acceso directo a la barra de tareas (clic derecho > Anclar)." }
-        elseif ($s) { $script:InstallInfo.Text = "Estás usando una copia portátil. La versión instalada ($($s.Version)) está en $($s.Dir)." }
-        else { $script:InstallInfo.Text = 'Estás usando una copia portátil (sin instalar). Para iniciar con Windows y recibir actualizaciones automáticas, instala Revix PC con el instalador.' }
+        if (Test-RunningInstalled) { $script:InstallInfo.Text = (L 'Instalada en {0}. Puedes anclar el acceso directo a la barra de tareas (clic derecho > Anclar).' 'Installed in {0}. You can pin the shortcut to the taskbar (right-click > Pin).') -f $s.Dir }
+        elseif ($s) { $script:InstallInfo.Text = (L 'Estás usando una copia portátil. La versión instalada ({0}) está en {1}.' "You're using a portable copy. The installed version ({0}) is in {1}.") -f $s.Version, $s.Dir }
+        else { $script:InstallInfo.Text = L 'Estás usando una copia portátil (sin instalar). Para iniciar con Windows, instala Revix PC con el instalador.' "You're using a portable copy (not installed). To start with Windows, install Revix PC with the installer." }
         $script:BtnInstallApp.Visibility = $(if ($s) { 'Collapsed' } else { 'Visible' })
         $script:BtnUninstallApp.IsEnabled = [bool]($s -and $s.Uninstaller -and (Test-Path -LiteralPath $s.Uninstaller))
     }
@@ -3360,7 +3568,7 @@ try {
     $script:BtnUninstallApp.Add_Click({
         $s = Get-SetupInfo
         if (-not $s -or -not (Test-Path -LiteralPath $s.Uninstaller)) { Start-Process 'ms-settings:appsfeatures'; return }
-        $ans = Show-Msg '¿Desinstalar Revix PC? Se cerrará la app y se abrirá el desinstalador de Windows.' 'Question' 'YesNo'
+        $ans = Show-Msg (L '¿Desinstalar Revix PC? Se cerrará la app y se abrirá el desinstalador de Windows.' 'Uninstall Revix PC? The app will close and the Windows uninstaller will open.') 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
         Start-Process -FilePath $s.Uninstaller
         Exit-App
@@ -3406,13 +3614,13 @@ try {
     # ---------- NVIDIA ----------
     $script:NvidiaInfo = $null
     function Get-NvidiaNewCount {
-        foreach ($d in @($script:DeviceItems)) { if ($d.StatusText -like 'Driver nuevo*') { return 1 } }
+        foreach ($d in @($script:DeviceItems)) { if ($d.IsNew) { return 1 } }
         return 0
     }
     function Check-Nvidia {
         $gpu = $script:RawDevices | Where-Object { ([string]$_.DeviceClass).ToUpper() -eq 'DISPLAY' -and [string]$_.Manufacturer -match 'NVIDIA' } | Select-Object -First 1
         if (-not $gpu) { return }
-        [void](Start-Bg 'Nvidia' 'Consultando a NVIDIA' $script:JobNvidia @([string]$gpu.Name, [string]$script:Config.GpuPfid) {
+        [void](Start-Bg 'Nvidia' (L 'Consultando a NVIDIA' 'Checking with NVIDIA') $script:JobNvidia @([string]$gpu.Name, [string]$script:Config.GpuPfid) {
             param($out, $err)
             if ($err) {
                 Write-ErrorLog "nvidia: $err"
@@ -3425,14 +3633,14 @@ try {
             $script:NvidiaInfo = @{ Latest = [string]$r.Version; Url = [string]$r.Url }
             Rebuild-Devices
             Update-Summary
-            if (Get-NvidiaNewCount) { Add-History 'Driver de NVIDIA' "Hay versión nueva: $($r.Version)" }
+            if (Get-NvidiaNewCount) { Add-History (L 'Driver de NVIDIA' 'NVIDIA driver') ((L 'Hay versión nueva: {0}' 'New version available: {0}') -f $r.Version) }
         })
     }
 
     # ---------- Volver a una versión anterior ----------
     function Show-RollbackDialog {
         if ($script:PrevVersions.Count -eq 0) {
-            Show-Msg "Todavía no hay programas actualizados con Revix PC.`n`nCada vez que actualices uno, aquí podrás volver a la versión que tenías antes." | Out-Null
+            Show-Msg (L "Todavía no hay programas actualizados con Revix PC.`n`nCada vez que actualices uno, aquí podrás volver a la versión que tenías antes." "No programs have been updated with Revix PC yet.`n`nEach time you update one, you'll be able to go back to the version you had before from here.") | Out-Null
             return
         }
         $dx = @"
@@ -3460,7 +3668,7 @@ try {
   </Grid>
 </Window>
 "@
-        $dlg = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$dx)))
+        $dlg = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml](Convert-XamlLang $dx))))
         Apply-Theme $dlg
         $dlg.Owner = $script:Window
         $script:RbDialog = $dlg
@@ -3476,9 +3684,9 @@ try {
         $dlg.FindName('BtnRbClose').Add_Click({ $script:RbDialog.Close() })
         $dlg.FindName('BtnRbDo').Add_Click({
             $sel = @($script:RbItems | Where-Object { $_.Selected })
-            if ($sel.Count -eq 0) { [void](Show-Msg 'Marca al menos un programa.' 'Information' 'OK' $script:RbDialog); return }
+            if ($sel.Count -eq 0) { [void](Show-Msg (L 'Marca al menos un programa.' 'Select at least one program.') 'Information' 'OK' $script:RbDialog); return }
             $list = ($sel | ForEach-Object { "  • $($_.Name): $($_.ToVersion) -> $($_.FromVersion)" }) -join "`n"
-            $ans = Show-Msg "Se reinstalará la versión anterior de:`n`n$list`n`nOjo: las versiones viejas pueden tener fallas de seguridad ya corregidas. ¿Continuar?" 'Question' 'YesNo' $script:RbDialog
+            $ans = Show-Msg ((L "Se reinstalará la versión anterior de:`n`n{0}`n`nOjo: las versiones viejas pueden tener fallas de seguridad ya corregidas. ¿Continuar?" "The previous version of these will be reinstalled:`n`n{0}`n`nNote: old versions may have security flaws that have since been fixed. Continue?") -f $list) 'Question' 'YesNo' $script:RbDialog
             if ($ans -ne 'Yes') { return }
             $script:RbDialog.Close()
             Start-Rollback $sel
@@ -3487,35 +3695,35 @@ try {
     }
 
     function Start-Rollback($sel) {
-        if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual.' | Out-Null; return }
+        if (Test-AnyRunning $script:WorkKinds) { Show-Msg (L 'Espera a que termine la tarea actual.' 'Wait for the current task to finish.') | Out-Null; return }
         $script:Tasks.Clear(); Reset-Cancel
-        Show-ProgressTab "Volviendo a la versión anterior de $(@($sel).Count) programa(s)"
+        Show-ProgressTab ((L 'Volviendo a la versión anterior de {0} programa(s)' 'Going back to the previous version of {0} program(s)') -f @($sel).Count)
         $script:RbMap = @{}
-        foreach ($i in $sel) { $script:RbMap[$i.Id] = $i; Add-TaskRow $i.Id "$($i.Name): volver a $($i.FromVersion)" }
+        foreach ($i in $sel) { $script:RbMap[$i.Id] = $i; Add-TaskRow $i.Id ((L '{0}: volver a {1}' '{0}: go back to {1}') -f $i.Name, $i.FromVersion) }
         $arr = [string[]]@($sel | ForEach-Object { "$($_.Id)|$($_.FromVersion)" })
-        [void](Start-Bg 'Rollback' 'Volviendo a versiones anteriores' $script:JobRollback @(, $arr) {
+        [void](Start-Bg 'Rollback' (L 'Volviendo a versiones anteriores' 'Going back to previous versions') $script:JobRollback @(, $arr) {
             param($out, $err)
-            if ($err) { Add-History 'Volver a versión anterior' "Error: $err"; Set-QueuedCancelled; Show-Msg $err 'Warning' | Out-Null; return }
+            if ($err) { Add-History (L 'Volver a versión anterior' 'Go back to previous version') "Error: $err"; Set-QueuedCancelled; Show-Msg $err 'Warning' | Out-Null; return }
             $done = @($out | Where-Object { $_.Kind -eq 'done' })
             $ok = @($done | Where-Object { [int]$_.ExitCode -eq 0 }).Count
-            $script:TaskHeader.Text = "Regresados a la versión anterior: $ok de $($done.Count)"
+            $script:TaskHeader.Text = (L 'Regresados a la versión anterior: {0} de {1}' 'Returned to the previous version: {0} of {1}') -f $ok, $done.Count
             Scan-Programs
         } {
             param($o)
             $i = $script:RbMap[[string]$o.Key]
             switch ($o.Kind) {
-                'start'  { Set-TaskRow $o.Key 'Instalando...' $script:C.Amber "Reinstalando $($i.FromVersion)" }
+                'start'  { Set-TaskRow $o.Key (L 'Instalando...' 'Installing...') $script:C.Amber ((L 'Reinstalando {0}' 'Reinstalling {0}') -f $i.FromVersion) }
                 'done'   {
                     if ([int]$o.ExitCode -eq 0) {
-                        Set-TaskRow $o.Key 'Correcto' $script:C.Green "Ahora tienes la $($i.FromVersion). La $($i.ToVersion) quedó saltada."
+                        Set-TaskRow $o.Key (L 'Correcto' 'Done') $script:C.Green ((L 'Ahora tienes la {0}. La {1} quedó saltada.' 'You now have {0}. Version {1} was skipped.') -f $i.FromVersion, $i.ToVersion)
                         $script:Skipped[$i.Id] = $i.ToVersion
                         [void]$script:PrevVersions.Remove($i.Id)
                         Save-Config
-                        Add-History "Volver a versión anterior: $($i.Name)" "$($i.ToVersion) -> $($i.FromVersion)"
+                        Add-History ((L 'Volver a versión anterior: {0}' 'Go back to previous version: {0}') -f $i.Name) "$($i.ToVersion) -> $($i.FromVersion)"
                     } else {
                         $d = (Get-WingetCodeText ([int]$o.ExitCode)); if ($o.Message) { $d += ' - ' + $o.Message }
                         Set-TaskRow $o.Key 'Error' $script:C.Red $d
-                        Add-History "Volver a versión anterior: $($i.Name)" "Error: $d"
+                        Add-History ((L 'Volver a versión anterior: {0}' 'Go back to previous version: {0}') -f $i.Name) "Error: $d"
                     }
                 }
                 'cancel' { Set-QueuedCancelled }
@@ -3526,10 +3734,10 @@ try {
     $script:BtnRollback.Add_Click({ Show-RollbackDialog })
     $script:BtnProgAuto.Add_Click({
         $sel = @($script:ProgramItems | Where-Object { $_.Selected })
-        if ($sel.Count -eq 0) { Show-Msg "Marca los programas en los que confías (por ejemplo tu navegador). Se actualizarán solos en cada revisión automática." | Out-Null; return }
+        if ($sel.Count -eq 0) { Show-Msg (L 'Marca los programas en los que confías (por ejemplo tu navegador). Se actualizarán solos en cada revisión automática.' 'Select the programs you trust (for example your browser). They will update on their own at each automatic check.') | Out-Null; return }
         foreach ($p in $sel) {
-            if ($p.Auto) { $p.Auto = $false; [void]$script:AutoUpdateIds.Remove($p.Id); Add-History "Automático: $($p.Name)" 'Desactivado' }
-            else { $p.Auto = $true; if (-not $script:AutoUpdateIds.Contains($p.Id)) { $script:AutoUpdateIds.Add($p.Id) }; Add-History "Automático: $($p.Name)" 'Activado' }
+            if ($p.Auto) { $p.Auto = $false; [void]$script:AutoUpdateIds.Remove($p.Id); Add-History ((L 'Automático: {0}' 'Automatic: {0}') -f $p.Name) (L 'Desactivado' 'Turned off') }
+            else { $p.Auto = $true; if (-not $script:AutoUpdateIds.Contains($p.Id)) { $script:AutoUpdateIds.Add($p.Id) }; Add-History ((L 'Automático: {0}' 'Automatic: {0}') -f $p.Name) (L 'Activado' 'Turned on') }
             $p.Selected = $false
         }
         Save-Config; Refresh-Programs
@@ -3537,9 +3745,9 @@ try {
 
     # ---------- Inicio de Windows ----------
     function Scan-Startup {
-        [void](Start-Bg 'Startup' 'Revisando programas de inicio' $script:JobStartup $null {
+        [void](Start-Bg 'Startup' (L 'Revisando programas de inicio' 'Checking startup programs') $script:JobStartup $null {
             param($out, $err)
-            if ($err) { Add-History 'Programas de inicio' "Error: $err"; return }
+            if ($err) { Add-History (L 'Programas de inicio' 'Startup programs') "Error: $err"; return }
             $slow = @($out | Where-Object { $_.Type -eq 'Slow' })
             $boot = $out | Where-Object { $_.Type -eq 'Boot' } | Select-Object -First 1
             $list = New-Object 'System.Collections.Generic.List[RevixPC.StartupItem]'
@@ -3553,15 +3761,15 @@ try {
                 try { if ($it.FilePath) { $leaf = [IO.Path]::GetFileName($it.FilePath) } } catch {}
                 if ($leaf) {
                     $m = $slow | Where-Object { $_.File -and ([IO.Path]::GetFileName([string]$_.File) -ieq $leaf) } | Sort-Object Date -Descending | Select-Object -First 1
-                    if ($m -and $m.Ms -gt 0) { $it.Impact = ('Ralentizó {0:N1} s ({1})' -f ($m.Ms / 1000), ([datetime]$m.Date).ToString('dd/MM')) }
+                    if ($m -and $m.Ms -gt 0) { $it.Impact = ((L 'Ralentizó {0:N1} s ({1})' 'Slowed it by {0:N1} s ({1})') -f ($m.Ms / 1000), ([datetime]$m.Date).ToString((Get-DateFmt))) }
                 }
                 $list.Add($it)
             }
             $script:StartupItems = $list
             $script:GridStartup.ItemsSource = @($list | Sort-Object @{ Expression = { -not $_.Enabled } }, Name)
             if ($boot -and $boot.Ms -gt 0) {
-                $script:BootInfo.Text = ('Último arranque: {0:N1} s ({1})' -f ($boot.Ms / 1000), ([datetime]$boot.Date).ToString('dd/MM/yyyy'))
-            } else { $script:BootInfo.Text = "$(@($list | Where-Object { $_.Enabled }).Count) de $($list.Count) activos" }
+                $script:BootInfo.Text = ((L 'Último arranque: {0:N1} s ({1})' 'Last startup: {0:N1} s ({1})') -f ($boot.Ms / 1000), ([datetime]$boot.Date).ToString((Get-DateFmt)))
+            } else { $script:BootInfo.Text = (L '{0} de {1} activos' '{0} of {1} active') -f @($list | Where-Object { $_.Enabled }).Count, $list.Count }
             $script:Scanned.Startup = $true
         })
     }
@@ -3582,15 +3790,16 @@ try {
         $want = [bool]$cb.IsChecked
         if ($item.ApprovedPath -like 'HKLM:*' -and -not $script:IsAdmin) {
             $item.Enabled = -not $want; $script:GridStartup.Items.Refresh()
-            Show-Msg 'Este programa arranca para todos los usuarios. Para cambiarlo abre Revix PC como administrador.' 'Warning' | Out-Null
+            Show-Msg (L 'Este programa arranca para todos los usuarios. Para cambiarlo abre Revix PC como administrador.' 'This program starts for all users. To change it, open Revix PC as administrator.') 'Warning' | Out-Null
             return
         }
         try {
             Set-StartupEnabled $item $want
-            if ($want) { Add-History "Inicio de Windows: $($item.Name)" 'Activado' } else { Add-History "Inicio de Windows: $($item.Name)" 'Desactivado (no arrancará con Windows)' }
+            $hn = (L 'Inicio de Windows: {0}' 'Windows startup: {0}') -f $item.Name
+            if ($want) { Add-History $hn (L 'Activado' 'Turned on') } else { Add-History $hn (L 'Desactivado (no arrancará con Windows)' "Turned off (won't start with Windows)") }
         } catch {
             $item.Enabled = -not $want; $script:GridStartup.Items.Refresh()
-            Show-Msg "No se pudo cambiar:`n$($_.Exception.Message)" 'Warning' | Out-Null
+            Show-Msg ((L "No se pudo cambiar:`n{0}" "Could not change it:`n{0}") -f $_.Exception.Message) 'Warning' | Out-Null
         }
     })
     $script:BtnStartupScan.Add_Click({ Scan-Startup })
@@ -3602,12 +3811,12 @@ try {
         $view = @($script:AppItems | Where-Object { -not $q -or $_.Name -like "*$q*" -or $_.Publisher -like "*$q*" })
         $script:GridApps.ItemsSource = $view
         $mb = ($script:AppItems | Measure-Object -Property SizeMB -Sum).Sum
-        $script:AppsInfo.Text = ('{0} programas · {1} en total (según lo que informa cada programa)' -f @($script:AppItems).Count, (Format-Bytes ([double]$mb * 1MB)))
+        $script:AppsInfo.Text = ((L '{0} programas · {1} en total (según lo que informa cada programa)' '{0} programs · {1} in total (as reported by each program)') -f @($script:AppItems).Count, (Format-Bytes ([double]$mb * 1MB)))
     }
     function Scan-Apps {
-        [void](Start-Bg 'Apps' 'Leyendo programas instalados' $script:JobApps $null {
+        [void](Start-Bg 'Apps' (L 'Leyendo programas instalados' 'Reading installed programs') $script:JobApps $null {
             param($out, $err)
-            if ($err) { Add-History 'Programas instalados' "Error: $err"; return }
+            if ($err) { Add-History (L 'Programas instalados' 'Installed programs') "Error: $err"; return }
             $list = New-Object 'System.Collections.Generic.List[RevixPC.AppItem]'
             foreach ($r in $out) {
                 $a = New-Object RevixPC.AppItem
@@ -3638,8 +3847,8 @@ try {
     $script:BtnAppsSettings.Add_Click({ Start-Process 'ms-settings:appsfeatures' })
     $script:BtnUninstall.Add_Click({
         $a = $script:GridApps.SelectedItem
-        if (-not $a) { Show-Msg 'Selecciona un programa de la lista (un clic sobre él).' | Out-Null; return }
-        $ans = Show-Msg "Se abrirá el desinstalador de:`n`n$($a.Name)`n`nSigue los pasos que te muestre. ¿Continuar?" 'Question' 'YesNo'
+        if (-not $a) { Show-Msg (L 'Selecciona un programa de la lista (un clic sobre él).' 'Select a program from the list (click on it).') | Out-Null; return }
+        $ans = Show-Msg ((L "Se abrirá el desinstalador de:`n`n{0}`n`nSigue los pasos que te muestre. ¿Continuar?" "The uninstaller for this will open:`n`n{0}`n`nFollow the steps it shows you. Continue?") -f $a.Name) 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
         try {
             $cmd = $a.UninstallString
@@ -3650,17 +3859,17 @@ try {
                 if ($parts[1]) { Start-Process -FilePath $parts[0] -ArgumentList $parts[1] } else { Start-Process -FilePath $parts[0] }
             }
             $script:UninstallPending = $true
-            Add-History "Desinstalar $($a.Name)" 'Se abrió el desinstalador'
+            Add-History ((L 'Desinstalar {0}' 'Uninstall {0}') -f $a.Name) (L 'Se abrió el desinstalador' 'The uninstaller was opened')
         } catch {
-            Show-Msg "No se pudo abrir el desinstalador:`n$($_.Exception.Message)`n`nPrueba desde 'Aplicaciones de Windows'." 'Warning' | Out-Null
+            Show-Msg ((L "No se pudo abrir el desinstalador:`n{0}`n`nPrueba desde 'Aplicaciones de Windows'." "Could not open the uninstaller:`n{0}`n`nTry from 'Windows apps'.") -f $_.Exception.Message) 'Warning' | Out-Null
         }
     })
 
     # ---------- Mi PC: ficha, batería y temperaturas ----------
     function Scan-PcInfo {
-        [void](Start-Bg 'PcInfo' 'Leyendo la ficha de tu PC' $script:JobPcInfo $null {
+        [void](Start-Bg 'PcInfo' (L 'Leyendo la ficha de tu PC' 'Reading your PC specs') $script:JobPcInfo $null {
             param($out, $err)
-            if ($err) { Add-History 'Ficha de la PC' "Error: $err"; return }
+            if ($err) { Add-History (L 'Ficha de la PC' 'PC specs') "Error: $err"; return }
             $list = New-Object 'System.Collections.Generic.List[RevixPC.InfoRow]'
             foreach ($r in $out) {
                 $i = New-Object RevixPC.InfoRow
@@ -3669,7 +3878,7 @@ try {
             }
             $script:SpecRows = $list
             $script:GridSpecs.ItemsSource = @($list)
-            if ($list | Where-Object { $_.Section -eq 'Batería' }) { $script:BtnBatteryReport.Visibility = 'Visible' }
+            if ($list | Where-Object { $_.Section -eq (L 'Batería' 'Battery') }) { $script:BtnBatteryReport.Visibility = 'Visible' }
             $script:Scanned.PcInfo = $true
         })
     }
@@ -3677,7 +3886,7 @@ try {
     $script:BtnCopySpecs.Add_Click({
         if (-not $script:SpecRows) { return }
         $sb = New-Object System.Text.StringBuilder
-        [void]$sb.AppendLine("Ficha de mi PC ($env:COMPUTERNAME) - $((Get-Date).ToString('dd/MM/yyyy'))")
+        [void]$sb.AppendLine(((L 'Ficha de mi PC ({0}) - {1}' 'My PC specs ({0}) - {1}') -f $env:COMPUTERNAME, (Get-Date).ToString((Get-DateFmt))))
         $last = ''
         foreach ($r in $script:SpecRows) {
             if ($r.Section -ne $last) { [void]$sb.AppendLine(''); [void]$sb.AppendLine($r.Section.ToUpper()); $last = $r.Section }
@@ -3685,13 +3894,13 @@ try {
             [void]$sb.AppendLine($line)
         }
         [System.Windows.Clipboard]::SetText($sb.ToString())
-        $script:StatusText.Text = 'Ficha copiada. Pégala donde quieras con Ctrl+V.'
+        $script:StatusText.Text = L 'Ficha copiada. Pégala donde quieras con Ctrl+V.' 'Specs copied. Paste them anywhere with Ctrl+V.'
     })
     $script:BtnBatteryReport.Add_Click({
-        $file = Join-Path ([Environment]::GetFolderPath('Desktop')) ('Informe-bateria-{0}.html' -f (Get-Date).ToString('yyyyMMdd'))
+        $file = Join-Path ([Environment]::GetFolderPath('Desktop')) ((L 'Informe-bateria-{0}.html' 'Battery-report-{0}.html') -f (Get-Date).ToString('yyyyMMdd'))
         & powercfg.exe /batteryreport /output "$file" | Out-Null
-        if (Test-Path $file) { Start-Process $file; Add-History 'Informe de batería' $file }
-        else { Show-Msg 'No se pudo crear el informe de batería.' 'Warning' | Out-Null }
+        if (Test-Path $file) { Start-Process $file; Add-History (L 'Informe de batería' 'Battery report') $file }
+        else { Show-Msg (L 'No se pudo crear el informe de batería.' 'The battery report could not be created.') 'Warning' | Out-Null }
     })
 
     function Get-GpuSensor {
@@ -3705,8 +3914,8 @@ try {
         } catch { return $null }
     }
     function Get-TempLevel([int]$t, [int]$warm, [int]$hot) {
-        if ($t -ge $hot) { return @('Muy caliente', $script:C.Red) }
-        if ($t -ge $warm) { return @('Caliente', $script:C.Amber) }
+        if ($t -ge $hot) { return @((L 'Muy caliente' 'Very hot'), $script:C.Red) }
+        if ($t -ge $warm) { return @((L 'Caliente' 'Hot'), $script:C.Amber) }
         return @('Normal', $script:C.Green)
     }
     function Update-Temps([bool]$full) {
@@ -3715,29 +3924,29 @@ try {
             $t = [int]$g.Temp
             if ($script:Config.TempAlert -and $t -ge 85 -and (-not $script:LastTempAlert -or ((Get-Date) - $script:LastTempAlert).TotalMinutes -ge 10)) {
                 $script:LastTempAlert = Get-Date
-                try { $script:TrayIcon.ShowBalloonTip(8000, 'Tarjeta de video muy caliente', "$($g.Name): $t °C. Revisa la ventilación y el polvo.", [System.Windows.Forms.ToolTipIcon]::Warning) } catch {}
-                Add-History 'Alerta de temperatura' "$($g.Name): $t °C"
+                try { $script:TrayIcon.ShowBalloonTip(8000, (L 'Tarjeta de video muy caliente' 'Graphics card very hot'), ((L '{0}: {1} °C. Revisa la ventilación y el polvo.' '{0}: {1} °C. Check airflow and dust.') -f $g.Name, $t), [System.Windows.Forms.ToolTipIcon]::Warning) } catch {}
+                Add-History (L 'Alerta de temperatura' 'Temperature alert') "$($g.Name): $t °C"
             }
         }
         if (-not $full) { return }
         $rows = New-Object 'System.Collections.Generic.List[RevixPC.HealthRow]'
         if ($g) {
-            if ($g.Temp -match '^\d+$') { $lv = Get-TempLevel ([int]$g.Temp) 75 85; $rows.Add((New-HealthRow '' 'Video: temperatura' "$($g.Temp) °C" $lv[0] $lv[1] 0)) }
-            if ($g.Load -match '^\d+$') { $rows.Add((New-HealthRow '' 'Video: uso' "$($g.Load) %" '' $script:C.Gray 0)) }
+            if ($g.Temp -match '^\d+$') { $lv = Get-TempLevel ([int]$g.Temp) 75 85; $rows.Add((New-HealthRow '' (L 'Video: temperatura' 'Graphics: temperature') "$($g.Temp) °C" $lv[0] $lv[1] 0)) }
+            if ($g.Load -match '^\d+$') { $rows.Add((New-HealthRow '' (L 'Video: uso' 'Graphics: load') "$($g.Load) %" '' $script:C.Gray 0)) }
             if ($g.Fan -match '^\d+$') {
-                $ft = "$($g.Fan) %"; if ([int]$g.Fan -eq 0) { $ft = 'Detenido (normal en reposo)' }
-                $rows.Add((New-HealthRow '' 'Video: ventilador' $ft '' $script:C.Gray 0))
+                $ft = "$($g.Fan) %"; if ([int]$g.Fan -eq 0) { $ft = L 'Detenido (normal en reposo)' 'Stopped (normal at idle)' }
+                $rows.Add((New-HealthRow '' (L 'Video: ventilador' 'Graphics: fan') $ft '' $script:C.Gray 0))
             }
             $pw = 0.0
-            if ([double]::TryParse([string]$g.Power, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$pw)) { $rows.Add((New-HealthRow '' 'Video: consumo' ('{0:N0} W' -f $pw) '' $script:C.Gray 0)) }
-            if ($g.MemUsed -match '^\d+$') { $rows.Add((New-HealthRow '' 'Video: memoria' "$($g.MemUsed) / $($g.MemTotal) MB" '' $script:C.Gray 0)) }
+            if ([double]::TryParse([string]$g.Power, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$pw)) { $rows.Add((New-HealthRow '' (L 'Video: consumo' 'Graphics: power') ('{0:N0} W' -f $pw) '' $script:C.Gray 0)) }
+            if ($g.MemUsed -match '^\d+$') { $rows.Add((New-HealthRow '' (L 'Video: memoria' 'Graphics: memory') "$($g.MemUsed) / $($g.MemTotal) MB" '' $script:C.Gray 0)) }
         } else {
-            $rows.Add((New-HealthRow '' 'Tarjeta de video' 'No disponible' 'Solo NVIDIA' $script:C.Gray 0))
+            $rows.Add((New-HealthRow '' (L 'Tarjeta de video' 'Graphics card') (L 'No disponible' 'Not available') (L 'Solo NVIDIA' 'NVIDIA only') $script:C.Gray 0))
         }
         foreach ($d in @($script:DiskTemps)) {
             if (-not $d) { continue }
             $lv = Get-TempLevel ([int]$d.Temp) 60 70
-            $rows.Add((New-HealthRow '' "Disco: $($d.Name)" "$($d.Temp) °C" $lv[0] $lv[1] 0))
+            $rows.Add((New-HealthRow '' ((L 'Disco: {0}' 'Disk: {0}') -f $d.Name) "$($d.Temp) °C" $lv[0] $lv[1] 0))
         }
         $script:GridTemps.ItemsSource = @($rows)
     }
@@ -3785,9 +3994,9 @@ try {
         if ($t -like 'tab:*') { Go-Tab ([int]$t.Substring(4)) }
         elseif ($t -eq 'perfmon-rel') { Start-Process 'perfmon.exe' -ArgumentList '/rel' }
         elseif ($t -eq 'reboot') {
-            if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual (mira la pestaña Progreso).' | Out-Null; return }
-            $ans = Show-Msg 'Se reiniciará la PC para terminar de instalar las actualizaciones. Guarda tu trabajo y cierra tus programas. ¿Reiniciar ahora?' 'Question' 'YesNo'
-            if ($ans -eq 'Yes') { Add-History 'Reiniciar PC' 'Para terminar actualizaciones de Windows'; Request-Restart }
+            if (Test-AnyRunning $script:WorkKinds) { Show-Msg (L 'Espera a que termine la tarea actual (mira la pestaña Progreso).' 'Wait for the current task to finish (see the Progress tab).') | Out-Null; return }
+            $ans = Show-Msg (L 'Se reiniciará la PC para terminar de instalar las actualizaciones. Guarda tu trabajo y cierra tus programas. ¿Reiniciar ahora?' 'The PC will restart to finish installing updates. Save your work and close your programs. Restart now?') 'Question' 'YesNo'
+            if ($ans -eq 'Yes') { Add-History (L 'Reiniciar PC' 'Restart PC') (L 'Para terminar actualizaciones de Windows' 'To finish Windows updates'); Request-Restart }
         }
         elseif ($t -match '^https://') { Start-Process $t }
     })
@@ -3826,7 +4035,7 @@ try {
         $prog = @($script:ProgramItems | Where-Object { -not $_.Hidden })
         $autoN = @($prog | Where-Object { $_.Auto }).Count
         $wuWin = @($script:WUItems | Where-Object { -not $_.IsDriver })
-        $sec = @($wuWin | Where-Object { $_.Kind -eq 'Seguridad' }).Count
+        $sec = @($wuWin | Where-Object { $_.Severity }).Count
         $wuDrv = @($script:WUItems | Where-Object { $_.IsDriver }).Count
         $nv = Get-NvidiaNewCount
         $warn = @($script:HealthRows | Where-Object { $_.Level -ge 1 })
@@ -3834,29 +4043,29 @@ try {
         $lvl1 = $warn.Count - $lvl2
 
         if ($script:Scanned.Programs) {
-            if ($prog.Count -eq 0) { $script:SubPrograms.Text = 'Todo al día' }
-            elseif ($autoN -gt 0) { $script:SubPrograms.Text = "$autoN se actualizan solos" }
-            else { $script:SubPrograms.Text = 'Esperan tu permiso' }
-            $script:BtnHomeUpdate.Content = "Actualizar programas ($($prog.Count))"
+            if ($prog.Count -eq 0) { $script:SubPrograms.Text = L 'Todo al día' 'All up to date' }
+            elseif ($autoN -gt 0) { $script:SubPrograms.Text = (L '{0} se actualizan solos' '{0} update on their own') -f $autoN }
+            else { $script:SubPrograms.Text = L 'Esperan tu permiso' 'Waiting for your OK' }
+            $script:BtnHomeUpdate.Content = (L 'Actualizar programas ({0})' 'Update programs ({0})') -f $prog.Count
             $script:BtnHomeUpdate.IsEnabled = ($prog.Count -gt 0)
         }
         if ($script:Scanned.WU) {
-            if ($wuWin.Count -eq 0) { $script:SubWU.Text = 'Todo al día' }
-            elseif ($sec -gt 0) { $script:SubWU.Text = "$sec de seguridad" }
-            else { $script:SubWU.Text = 'Parches y mejoras' }
-            if ($nv) { $script:SubDrivers.Text = 'NVIDIA tiene uno nuevo' }
-            elseif ($wuDrv) { $script:SubDrivers.Text = 'En Windows Update' }
-            else { $script:SubDrivers.Text = 'Todo al día' }
+            if ($wuWin.Count -eq 0) { $script:SubWU.Text = L 'Todo al día' 'All up to date' }
+            elseif ($sec -gt 0) { $script:SubWU.Text = (L '{0} de seguridad' '{0} security') -f $sec }
+            else { $script:SubWU.Text = L 'Parches y mejoras' 'Patches and improvements' }
+            if ($nv) { $script:SubDrivers.Text = L 'NVIDIA tiene uno nuevo' 'NVIDIA has a new one' }
+            elseif ($wuDrv) { $script:SubDrivers.Text = L 'En Windows Update' 'In Windows Update' }
+            else { $script:SubDrivers.Text = L 'Todo al día' 'All up to date' }
         }
         if ($script:Scanned.Health) {
-            if ($warn.Count -eq 0) { $script:SubHealth.Text = 'Todo bien' }
-            elseif ($lvl2 -gt 0) { $script:SubHealth.Text = "$lvl2 importante(s)" }
-            else { $script:SubHealth.Text = 'Para revisar' }
+            if ($warn.Count -eq 0) { $script:SubHealth.Text = L 'Todo bien' 'All good' }
+            elseif ($lvl2 -gt 0) { $script:SubHealth.Text = (L '{0} importante(s)' '{0} important') -f $lvl2 }
+            else { $script:SubHealth.Text = L 'Para revisar' 'Worth a look' }
         }
         if ($script:Scanned.Clean) {
             $sum = 0.0
             foreach ($c in $script:CleanItems) { if ($c.Selected -and $c.Bytes -gt 0) { $sum += $c.Bytes } }
-            if ($sum -gt 50MB) { $script:BtnHomeClean.Content = 'Liberar ' + (Format-Bytes $sum) } else { $script:BtnHomeClean.Content = 'Limpieza' }
+            if ($sum -gt 50MB) { $script:BtnHomeClean.Content = (L 'Liberar ' 'Free ') + (Format-Bytes $sum) } else { $script:BtnHomeClean.Content = L 'Limpieza' 'Cleanup' }
         }
 
         if ($script:Scanned.Programs) { Set-Badge $script:BadgeProgBox $script:BadgeProg $prog.Count }
@@ -3865,41 +4074,42 @@ try {
         if ($script:Scanned.Health) { Set-Badge $script:BadgeHealthBox $script:BadgeHealth $warn.Count }
 
         $todo = New-Object 'System.Collections.Generic.List[RevixPC.TodoItem]'
+        $tView = L 'Ver' 'View'
         if ($script:RebootPending) {
             $nr = $script:WURebootItems.Count
-            $d = 'Windows terminará de aplicar cambios al reiniciar'
-            if ($nr -gt 0) { $d = "$nr actualización(es) instaladas esperan el reinicio" }
-            $todo.Add((New-Todo 'Reinicio pendiente' $d 'Windows' '#1D4ED8' 'R' 'Reiniciar' 'reboot'))
+            $d = L 'Windows terminará de aplicar cambios al reiniciar' 'Windows will finish applying changes after a restart'
+            if ($nr -gt 0) { $d = (L '{0} actualización(es) instaladas esperan el reinicio' '{0} installed update(s) waiting for a restart') -f $nr }
+            $todo.Add((New-Todo (L 'Reinicio pendiente' 'Restart pending') $d 'Windows' '#1D4ED8' 'R' (L 'Reiniciar' 'Restart') 'reboot'))
         }
         if ($wuWin.Count -gt 0) {
-            $d = 'Parches y mejoras de Windows'; if ($sec -gt 0) { $d = "$sec de seguridad · pueden pedir reiniciar" }
-            $todo.Add((New-Todo "Instala $($wuWin.Count) actualización(es) de Windows" $d 'Windows' '#2F6FEB' 'W' 'Ver' 'tab:2'))
+            $d = L 'Parches y mejoras de Windows' 'Windows patches and improvements'; if ($sec -gt 0) { $d = (L '{0} de seguridad · pueden pedir reiniciar' '{0} security · may ask for a restart') -f $sec }
+            $todo.Add((New-Todo ((L 'Instala {0} actualización(es) de Windows' 'Install {0} Windows update(s)') -f $wuWin.Count) $d 'Windows' '#2F6FEB' 'W' $tView 'tab:2'))
         }
         if ($nv) {
-            $dv = $script:DeviceItems | Where-Object { $_.StatusText -like 'Driver nuevo*' } | Select-Object -First 1
-            $todo.Add((New-Todo "Driver nuevo para tu $($dv.Name -replace '^NVIDIA\s+', '')" $dv.Note 'Driver' '#4D7C0F' 'N' 'Descargar' $dv.Link))
+            $dv = $script:DeviceItems | Where-Object { $_.IsNew } | Select-Object -First 1
+            $todo.Add((New-Todo ((L 'Driver nuevo para tu {0}' 'New driver for your {0}') -f ($dv.Name -replace '^NVIDIA\s+', '')) $dv.Note 'Driver' '#4D7C0F' 'N' (L 'Descargar' 'Download') $dv.Link))
         }
-        if ($wuDrv -gt 0) { $todo.Add((New-Todo "$wuDrv driver(s) en Windows Update" 'Se instalan desde la sección Windows Update' 'Driver' '#0E7490' 'D' 'Ver' 'tab:2')) }
+        if ($wuDrv -gt 0) { $todo.Add((New-Todo ((L '{0} driver(s) en Windows Update' '{0} driver(s) in Windows Update') -f $wuDrv) (L 'Se instalan desde la sección Windows Update' 'Install them from the Windows Update section') 'Driver' '#0E7490' 'D' $tView 'tab:2')) }
         if ($prog.Count -gt 0) {
             $manual = $prog.Count - $autoN
-            $d = 'Esperan tu permiso'
-            if ($autoN -gt 0 -and $manual -gt 0) { $d = "$autoN se actualizan solos · $manual esperan tu permiso" }
-            elseif ($autoN -gt 0) { $d = 'Se actualizan solos en la próxima revisión' }
-            $todo.Add((New-Todo "Actualiza $($prog.Count) programa(s)" $d 'Programas' '#C2410C' 'P' 'Ver' 'tab:1'))
+            $d = L 'Esperan tu permiso' 'Waiting for your OK'
+            if ($autoN -gt 0 -and $manual -gt 0) { $d = (L '{0} se actualizan solos · {1} esperan tu permiso' '{0} update on their own · {1} waiting for your OK') -f $autoN, $manual }
+            elseif ($autoN -gt 0) { $d = L 'Se actualizan solos en la próxima revisión' 'They update on their own at the next check' }
+            $todo.Add((New-Todo ((L 'Actualiza {0} programa(s)' 'Update {0} program(s)') -f $prog.Count) $d (L 'Programas' 'Programs') '#C2410C' 'P' $tView 'tab:1'))
         }
         foreach ($h in @($warn | Sort-Object Level -Descending | Select-Object -First 3)) {
             $tile = '#8A5A00'; if ($h.Level -ge 2) { $tile = '#B42318' }
             $tgt = 'tab:4'; if ($h.Link) { $tgt = $h.Link }
-            $todo.Add((New-Todo $h.Item ("$($h.Value) · $($h.StatusText)") 'Salud' $tile '!' 'Ver' $tgt))
+            $todo.Add((New-Todo $h.Item ("$($h.Value) · $($h.StatusText)") (L 'Salud' 'Health') $tile '!' $tView $tgt))
         }
         $script:TodoList.ItemsSource = @($todo)
         $n = $todo.Count
         $allScanned = ($script:Scanned.Programs -and $script:Scanned.WU -and $script:Scanned.Health)
         if ($n -eq 0) {
-            if ($allScanned) { $script:TodoEmpty.Text = 'Todo al día. No tienes nada pendiente.' } else { $script:TodoEmpty.Text = 'Revisando...' }
+            if ($allScanned) { $script:TodoEmpty.Text = L 'Todo al día. No tienes nada pendiente.' 'All up to date. Nothing pending.' } else { $script:TodoEmpty.Text = L 'Revisando...' 'Checking...' }
             $script:TodoEmpty.Visibility = 'Visible'
         } else { $script:TodoEmpty.Visibility = 'Collapsed' }
-        if ($n -gt 0) { $script:TodoCount.Text = "$n por hacer" } else { $script:TodoCount.Text = '' }
+        if ($n -gt 0) { $script:TodoCount.Text = (L '{0} por hacer' '{0} to do') -f $n } else { $script:TodoCount.Text = '' }
 
         if ($allScanned) {
             $score = Get-HealthScore $sec ($wuWin.Count - $sec) $prog.Count ($nv + $wuDrv) $lvl2 $lvl1
@@ -3907,20 +4117,23 @@ try {
             $script:ScoreText.Text = [string]$score
             $script:ScoreTitle.Text = $lab[0]
             Set-ScoreArc $score $lab[1]
-            if ($n -eq 0) { $sub = 'Todo al día. No tienes nada pendiente.' }
-            elseif ($n -eq 1) { $sub = 'Tienes 1 cosa por hacer.' }
-            else { $sub = "Tienes $n cosas por hacer." }
-            if ($n -gt 0 -and (Test-GameMode)) { $sub += ' Puedes hacerlas cuando termines de jugar.' }
-            elseif ($n -gt 0 -and $lvl2 -eq 0 -and $sec -eq 0) { $sub += ' Nada urgente.' }
+            if ($n -eq 0) { $sub = L 'Todo al día. No tienes nada pendiente.' 'All up to date. Nothing pending.' }
+            elseif ($n -eq 1) { $sub = L 'Tienes 1 cosa por hacer.' 'You have 1 thing to do.' }
+            else { $sub = (L 'Tienes {0} cosas por hacer.' 'You have {0} things to do.') -f $n }
+            if ($n -gt 0 -and (Test-GameMode)) { $sub += L ' Puedes hacerlas cuando termines de jugar.' ' You can do them when you finish playing.' }
+            elseif ($n -gt 0 -and $lvl2 -eq 0 -and $sec -eq 0) { $sub += L ' Nada urgente.' ' Nothing urgent.' }
             $script:ScoreSub.Text = $sub
         }
 
         $stab = New-Object 'System.Collections.Generic.List[RevixPC.MiniRow]'
-        $short = @{ 'Apagados' = 'Apagados inesperados'; 'Pantallazos' = 'Pantallazos azules'; 'Errores de hardware' = 'Errores de hardware'; 'Errores de disco' = 'Errores de disco' }
-        foreach ($h in @($script:HealthRows | Where-Object { $_.Section -eq 'Estabilidad' })) {
+        # Nombres cortos en el mismo orden en que se crean las filas de Estabilidad
+        $short = @((L 'Apagados inesperados' 'Unexpected shutdowns'), (L 'Pantallazos azules' 'Blue screens'), (L 'Errores de hardware' 'Hardware errors'), (L 'Errores de disco' 'Disk errors'))
+        $si = 0
+        foreach ($h in @($script:HealthRows | Where-Object { $_.Section -eq (L 'Estabilidad' 'Stability') })) {
             $m = New-Object RevixPC.MiniRow
             $m.Name = $h.Item
-            foreach ($k in $short.Keys) { if ($h.Item -like "$k*") { $m.Name = $short[$k] } }
+            if ($si -lt $short.Count) { $m.Name = $short[$si] }
+            $si++
             $v = '0'; if ($h.Value -match '^(\d+)') { $v = $matches[1] }
             $m.Value = $v; $m.Color = $h.StatusColor
             $stab.Add($m)
@@ -3946,7 +4159,7 @@ try {
         }
         if ($rows.Count -eq 0) {
             $m = New-Object RevixPC.MiniRow
-            $m.Name = 'Leyendo sensores...'; $m.Value = ''; $m.Pct = 0; $m.Color = '#6B7383'
+            $m.Name = L 'Leyendo sensores...' 'Reading sensors...'; $m.Value = ''; $m.Pct = 0; $m.Color = '#6B7383'
             $rows.Add($m)
             if (-not $script:Running['DiskTemp']) { Scan-DiskTemps }
         }
@@ -3954,9 +4167,9 @@ try {
     }
 
     function Update-GameChip {
-        if (-not $script:Config.GameMode) { $script:GameChipText.Text = 'Modo juego: apagado'; $script:GameDot.Fill = Get-Brush '#6B7383' }
-        elseif (Test-GameMode) { $script:GameChipText.Text = 'Modo juego: activo'; $script:GameDot.Fill = Get-Brush '#F59E0B' }
-        else { $script:GameChipText.Text = 'Modo juego: listo'; $script:GameDot.Fill = Get-Brush '#22C55E' }
+        if (-not $script:Config.GameMode) { $script:GameChipText.Text = L 'Modo juego: apagado' 'Game mode: off'; $script:GameDot.Fill = Get-Brush '#6B7383' }
+        elseif (Test-GameMode) { $script:GameChipText.Text = L 'Modo juego: activo' 'Game mode: active'; $script:GameDot.Fill = Get-Brush '#F59E0B' }
+        else { $script:GameChipText.Text = L 'Modo juego: listo' 'Game mode: ready'; $script:GameDot.Fill = Get-Brush '#22C55E' }
     }
 
     $script:Tabs.Add_SelectionChanged({
@@ -3985,9 +4198,9 @@ try {
         Apply-Theme $script:Window
         $script:CurrentTheme = Get-EffectiveTheme
         if ($script:CurrentTheme -eq 'Light') {
-            $script:ThemeIcon.Text = [string][char]0xE708; $script:BtnTheme.ToolTip = 'Cambiar a tema oscuro'
+            $script:ThemeIcon.Text = [string][char]0xE708; $script:BtnTheme.ToolTip = L 'Cambiar a tema oscuro' 'Switch to dark theme'
         } else {
-            $script:ThemeIcon.Text = [string][char]0xE706; $script:BtnTheme.ToolTip = 'Cambiar a tema claro'
+            $script:ThemeIcon.Text = [string][char]0xE706; $script:BtnTheme.ToolTip = L 'Cambiar a tema claro' 'Switch to light theme'
         }
         try {
             $h = (New-Object System.Windows.Interop.WindowInteropHelper($script:Window)).Handle
@@ -4018,15 +4231,15 @@ try {
     }
     function Check-AppUpdate([bool]$quiet) {
         $script:AppUpdQuiet = $quiet
-        [void](Start-Bg 'AppUpd' 'Buscando nueva versión de Revix PC' $script:JobCheckAppUpdate @($script:GitHubRepo) {
+        [void](Start-Bg 'AppUpd' (L 'Buscando nueva versión de Revix PC' 'Checking for a new version of Revix PC') $script:JobCheckAppUpdate @($script:GitHubRepo) {
             param($out, $err)
             if ($err) { if (-not $script:AppUpdQuiet) { Show-Msg $err 'Warning' | Out-Null }; return }
             $r = $out | Select-Object -First 1
             if (-not $r -or -not $r.Version) { return }
-            if ((Compare-AppVersion $r.Version $script:AppVersion) -le 0) { if (-not $script:AppUpdQuiet) { Show-Msg "Ya tienes la última versión ($($script:AppVersion))." | Out-Null }; return }
+            if ((Compare-AppVersion $r.Version $script:AppVersion) -le 0) { if (-not $script:AppUpdQuiet) { Show-Msg ((L 'Ya tienes la última versión ({0}).' 'You already have the latest version ({0}).') -f $script:AppVersion) | Out-Null }; return }
             if ($script:AppUpdQuiet -and (-not $script:Window.IsVisible -or (Test-GameMode))) {
                 $script:PendingAppUpdate = $r
-                Show-Notify 'Nueva versión de Revix PC' "Versión $($r.Version) disponible. Abre la app para ver las novedades."
+                Show-Notify (L 'Nueva versión de Revix PC' 'New version of Revix PC') ((L 'Versión {0} disponible. Abre la app para ver las novedades.' 'Version {0} is available. Open the app to see what''s new.') -f $r.Version)
                 return
             }
             Offer-AppUpdate $r
@@ -4035,9 +4248,9 @@ try {
     function Offer-AppUpdate($r) {
         $script:PendingAppUpdate = $null
         $notes = ConvertTo-PlainNotes $r.Notes
-        $txt = "Hay una versión nueva de Revix PC: $($r.Version) (tienes la $($script:AppVersion))."
-        if ($notes) { $txt += "`n`nNovedades:`n$notes" }
-        $txt += "`n`nDescarga el instalador desde la página oficial de Revix PC en GitHub y ábrelo: se actualiza sin perder tus ajustes. ¿Abrir la página?"
+        $txt = (L 'Hay una versión nueva de Revix PC: {0} (tienes la {1}).' 'A new version of Revix PC is available: {0} (you have {1}).') -f $r.Version, $script:AppVersion
+        if ($notes) { $txt += (L "`n`nNovedades:`n" "`n`nWhat's new:`n") + $notes }
+        $txt += L "`n`nDescarga el instalador desde la página oficial de Revix PC en GitHub y ábrelo: se actualiza sin perder tus ajustes. ¿Abrir la página?" "`n`nDownload the installer from the official Revix PC page on GitHub and run it: it updates without losing your settings. Open the page?"
         if ((Show-Msg $txt 'Question' 'YesNo') -eq 'Yes') {
             $page = [string]$r.Page
             if ($page -notmatch '^https://github\.com/Marco11Mz/RevixPC/') { $page = "$($script:GitHubUrl)/releases/latest" }
@@ -4062,17 +4275,17 @@ try {
         $want = [bool]$script:ChkStartup.IsChecked
         if (-not $script:IsAdmin) {
             $script:ChkStartup.IsChecked = -not $want
-            Show-Msg 'Para cambiar esto abre Revix PC como administrador.' 'Warning' | Out-Null; return
+            Show-Msg (L 'Para cambiar esto abre Revix PC como administrador.' 'To change this, open Revix PC as administrator.') 'Warning' | Out-Null; return
         }
         if ($want -and -not (Test-Installed)) {
             $script:ChkStartup.IsChecked = $false
-            $ans = Show-Msg "Para iniciar con Windows, instala Revix PC con el instalador (RevixPC-Setup). ¿Abrir la página de descarga?" 'Question' 'YesNo'
+            $ans = Show-Msg (L 'Para iniciar con Windows, instala Revix PC con el instalador (RevixPC-Setup). ¿Abrir la página de descarga?' 'To start with Windows, install Revix PC with the installer (RevixPC-Setup). Open the download page?') 'Question' 'YesNo'
             if ($ans -eq 'Yes') { Start-Process "$($script:GitHubUrl)/releases/latest" }
             return
         }
         if (Set-Startup $want) {
             $script:Config.StartWithWindows = $want; Save-Config
-            if ($want) { Add-History 'Iniciar con Windows' 'Activado' } else { Add-History 'Iniciar con Windows' 'Desactivado' }
+            if ($want) { Add-History (L 'Iniciar con Windows' 'Start with Windows') (L 'Activado' 'Turned on') } else { Add-History (L 'Iniciar con Windows' 'Start with Windows') (L 'Desactivado' 'Turned off') }
         } else { $script:ChkStartup.IsChecked = -not $want }
     })
     $script:ChkCloseToTray.Add_Click({ $script:Config.CloseToTray = [bool]$script:ChkCloseToTray.IsChecked; Save-Config })
@@ -4087,8 +4300,40 @@ try {
     $script:ChkTempAlert.Add_Click({ $script:Config.TempAlert = [bool]$script:ChkTempAlert.IsChecked; Save-Config })
     $script:ChkAppUpdates.Add_Click({ $script:Config.CheckAppUpdates = [bool]$script:ChkAppUpdates.IsChecked; Save-Config })
 
+    # ---------- Idioma ----------
+    # Volver a abrir Revix PC (para aplicar el idioma). Necesita RevixPC.exe; Windows vuelve a pedir permiso de administrador.
+    function Restart-App {
+        $exe = Join-Path $script:AppDir 'RevixPC.exe'
+        if (-not (Test-Path -LiteralPath $exe)) { return $false }
+        try { $script:Mutex.ReleaseMutex() } catch {}
+        try {
+            Start-Process -FilePath $exe -ErrorAction Stop
+        } catch {
+            # Si no se acepta el aviso de Windows, Revix PC sigue abierta como estaba
+            try { $c = $false; $script:Mutex = [System.Threading.Mutex]::new($true, 'Local\RevixPC_Instance', [ref]$c) } catch {}
+            return $false
+        }
+        Exit-App
+        return $true
+    }
+    $script:CmbLang.Add_SelectionChanged({
+        if ($script:SyncingLang) { return }
+        $sel = $script:CmbLang.SelectedItem
+        if (-not $sel) { return }
+        $script:Config.Language = [string]$sel.Tag; Save-Config
+        $new = [string]$sel.Tag
+        if ($new -ne 'es' -and $new -ne 'en') { $new = Get-SystemLang }
+        if ($new -eq $script:Lang) { $script:LangNote.Visibility = 'Collapsed'; return }
+        $script:LangNote.Visibility = 'Visible'
+        Add-History (L 'Idioma' 'Language') ([string]$sel.Content)
+        if (Test-AnyRunning $script:WorkKinds) { return }
+        # La pregunta va en el idioma nuevo
+        if ($new -eq 'en') { $q = 'Restart Revix PC now to switch to English?' } else { $q = '¿Volver a abrir Revix PC ahora para cambiar a español?' }
+        $ans = Show-Msg $q 'Question' 'YesNo'
+        if ($ans -eq 'Yes' -and -not (Restart-App)) { Show-Msg (L 'Cierra Revix PC (Salir) y ábrela de nuevo para ver el idioma nuevo.' 'Close Revix PC (Exit) and open it again to see the new language.') | Out-Null }
+    })
+
     # ---------- Inicio ----------
-    Load-Data
     $script:ChkStartup.IsChecked      = [bool]$script:Config.StartWithWindows
     $script:ChkCloseToTray.IsChecked  = [bool]$script:Config.CloseToTray
     $script:ChkNotify.IsChecked       = [bool]$script:Config.Notify
@@ -4101,6 +4346,10 @@ try {
     foreach ($it in $script:CmbTheme.Items) { if ([string]$it.Tag -eq [string]$script:Config.Theme) { $script:CmbTheme.SelectedItem = $it } }
     if (-not $script:CmbTheme.SelectedItem) { $script:CmbTheme.SelectedIndex = 0 }
     $script:SyncingTheme = $false
+    $script:SyncingLang = $true
+    foreach ($it in $script:CmbLang.Items) { if ([string]$it.Tag -eq [string]$script:Config.Language) { $script:CmbLang.SelectedItem = $it } }
+    if (-not $script:CmbLang.SelectedItem) { $script:CmbLang.SelectedIndex = 0 }
+    $script:SyncingLang = $false
     Set-Theme
     $script:Scanned.Startup = $false; $script:Scanned.Apps = $false; $script:Scanned.PcInfo = $false
     $script:AppItems = @(); $script:DiskTemps = @()
@@ -4110,17 +4359,17 @@ try {
     Set-AutoTimer
     Update-InstallInfo
     $script:AboutTitle.Text = "Revix PC $($script:AppVersion)"
-    $script:AboutText.Text = "Datos (ajustes e historial): $($script:DataDir)"
+    $script:AboutText.Text = (L 'Datos (ajustes e historial): {0}' 'Data (settings and history): {0}') -f $script:DataDir
     $script:GridHistory.ItemsSource = $script:History
     Refresh-Clean
     if (-not $script:IsAdmin) { $script:AdminWarning.Visibility = 'Visible' }
     $window.Title = "Revix PC $($script:AppVersion)"
-    $script:VersionText.Text = "Versión $($script:AppVersion)"
+    $script:VersionText.Text = (L 'Versión {0}' 'Version {0}') -f $script:AppVersion
     $script:NavList.SelectedIndex = 0
     $script:Tabs.SelectedIndex = 0
     Update-GameChip
     Update-Home
-    if ($script:Migrated) { Add-History 'Revix PC' 'Se trajeron los ajustes e historial de ActualizaPC' }
+    if ($script:Migrated) { Add-History 'Revix PC' (L 'Se trajeron los ajustes e historial de ActualizaPC' 'Settings and history were brought over from ActualizaPC') }
     $window.Add_SourceInitialized({
         try {
             $h = (New-Object System.Windows.Interop.WindowInteropHelper($script:Window)).Handle
@@ -4142,10 +4391,10 @@ try {
     $window.Add_StateChanged({
         if ($script:Window.WindowState -eq 'Maximized') {
             $script:MaxIcon.Data = [System.Windows.Media.Geometry]::Parse('M2.5,0.5 H9.5 V7.5 M0.5,2.5 H7.5 V9.5 H0.5 Z')
-            $script:BtnWinMax.ToolTip = 'Restaurar'
+            $script:BtnWinMax.ToolTip = L 'Restaurar' 'Restore'
         } else {
             $script:MaxIcon.Data = [System.Windows.Media.Geometry]::Parse('M0.5,0.5 H9.5 V9.5 H0.5 Z')
-            $script:BtnWinMax.ToolTip = 'Maximizar'
+            $script:BtnWinMax.ToolTip = L 'Maximizar' 'Maximize'
         }
     })
 
@@ -4156,13 +4405,13 @@ try {
         if (-not $script:Config.WelcomeAccepted) {
             if (-not (Show-Welcome $false)) { Exit-App; return }
             $script:Config.WelcomeAccepted = $true; $script:Config.LastVersion = $script:AppVersion; Save-Config
-            Add-History 'Bienvenida' 'Aviso de licencias y responsabilidad aceptado'
+            Add-History (L 'Bienvenida' 'Welcome') (L 'Aviso de licencias y responsabilidad aceptado' 'License and responsibility notice accepted')
         }
         # 2) Novedades después de actualizar
         elseif ([string]$script:Config.LastVersion -ne $script:AppVersion) {
             $notes = [string]$script:Config.UpdateNotes
-            $txt = "Revix PC se actualizó a la versión $($script:AppVersion)."
-            if ($notes) { $txt += "`n`nNovedades:`n$notes" }
+            $txt = (L 'Revix PC se actualizó a la versión {0}.' 'Revix PC was updated to version {0}.') -f $script:AppVersion
+            if ($notes) { $txt += (L "`n`nNovedades:`n" "`n`nWhat's new:`n") + $notes }
             $script:Config.LastVersion = $script:AppVersion; $script:Config.UpdateNotes = ''; Save-Config
             Show-Msg $txt | Out-Null
         }
@@ -4176,7 +4425,7 @@ try {
             $script:Window.Hide()
             if (-not $script:TrayTipShown) {
                 $script:TrayTipShown = $true
-                try { $script:TrayIcon.ShowBalloonTip(5000, 'Revix PC sigue funcionando', 'Está junto al reloj. Clic derecho en el ícono > Salir para cerrarla del todo.', [System.Windows.Forms.ToolTipIcon]::Info) } catch {}
+                try { $script:TrayIcon.ShowBalloonTip(5000, (L 'Revix PC sigue funcionando' 'Revix PC is still running'), (L 'Está junto al reloj. Clic derecho en el ícono > Salir para cerrarla del todo.' "It's next to the clock. Right-click the icon > Exit to close it completely."), [System.Windows.Forms.ToolTipIcon]::Info) } catch {}
             }
             return
         }
@@ -4211,5 +4460,7 @@ try {
 catch {
     Write-ErrorLog ($_ | Out-String)
     try { $script:TrayIcon.Visible = $false } catch {}
-    [System.Windows.MessageBox]::Show("Revix PC tuvo un error al abrir:`n`n$($_.Exception.Message)`n`nDetalle guardado en:`n$script:ErrorLog", 'Revix PC', 'OK', 'Error') | Out-Null
+    $em = "Revix PC tuvo un error al abrir:`n`n{0}`n`nDetalle guardado en:`n{1}"
+    try { if ($script:Lang -eq 'en') { $em = "Revix PC had an error while opening:`n`n{0}`n`nDetails saved to:`n{1}" } } catch {}
+    [System.Windows.MessageBox]::Show(($em -f $_.Exception.Message, $script:ErrorLog), 'Revix PC', 'OK', 'Error') | Out-Null
 }

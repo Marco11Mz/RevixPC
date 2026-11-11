@@ -2,6 +2,19 @@
 
 Formato: Nuevo / Mejorado / Corregido. Versiones con [versionado semántico](https://semver.org/lang/es/).
 
+## [4.3.0] - 2026-11
+
+### Nuevo
+- **Inglés y español.** Revix PC usa el idioma de Windows (español si Windows está en español; si no, inglés). Se puede cambiar en **Ajustes > Apariencia > Idioma**; al cambiarlo ofrece volver a abrir la app.
+- El instalador también está en inglés y español (elige solo según el idioma de Windows).
+- En inglés las fechas se muestran como año-mes-día (2026-11-11) para que se entiendan en cualquier país.
+
+### Mejorado
+- Enlaces a NVIDIA, AMD e Intel en el idioma de la app.
+
+### Corregido
+- El texto de "copia portátil" en Ajustes > Avanzado ya no menciona actualizaciones automáticas (se quitaron en la 4.2.1).
+
 ## [4.2.1] - 2026-11
 
 ### Nuevo

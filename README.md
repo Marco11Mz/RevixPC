@@ -4,7 +4,7 @@
 
 Revisa y actualiza tu PC con Windows 10 y 11 desde un solo lugar: programas, Windows Update, drivers, salud del equipo y limpieza.
 
-*Free, open-source Windows 10/11 maintenance app (Spanish UI; English coming in 4.3.0).*
+*Free, open-source Windows 10/11 maintenance app, in English and Spanish. [English summary below](#english).*
 
 ## Qué hace
 
@@ -16,6 +16,7 @@ Revisa y actualiza tu PC con Windows 10 y 11 desde un solo lugar: programas, Win
 - **Modo juego**: mientras juegas no avisa, no revisa y no instala nada.
 - Avisa cuando Windows tiene un **reinicio pendiente** para terminar actualizaciones.
 - Tema claro y oscuro.
+- En **español e inglés** (sigue el idioma de Windows; se cambia en Ajustes > Apariencia > Idioma).
 
 ## Instalar
 
@@ -73,6 +74,16 @@ Windows 10 u 11 con Windows PowerShell 5.1 (viene con Windows) y el "Instalador 
 - `launcher/Launcher.cs`: `RevixPC.exe`, abre `RevixPC.ps1` dentro del mismo proceso.
 - `installer/RevixPC.iss`: instalador con [Inno Setup](https://jrsoftware.org/isinfo.php).
 - `.github/workflows/release.yml`: GitHub Actions arma el instalador y el .zip al publicar una versión y agrega las huellas SHA-256.
+
+## English
+
+Revix PC checks and updates your Windows 10/11 PC from one place: programs (with winget), Windows Update, drivers, PC health, cleanup, startup programs and more. It's free and open source (MIT).
+
+- **Install:** download `RevixPC-Setup-x.y.z.exe` from [Releases](https://github.com/Marco11Mz/RevixPC/releases/latest) and run it. Portable: `RevixPC-Portable-x.y.z.zip` (open `RevixPC.exe`).
+- **Language:** it follows your Windows language (Spanish if Windows is in Spanish, otherwise English). Change it in *Settings > Appearance > Language*.
+- **Privacy:** it doesn't send your data anywhere. It only connects to Microsoft (winget, Windows Update, Defender), NVIDIA (if you have an NVIDIA card) and GitHub (to check for new versions).
+- **Notice:** when updating programs, winget accepts their license agreements on your behalf. Provided as is, without warranty. Not affiliated with Microsoft, NVIDIA, AMD, Intel, Logitech, Razer, HyperX or other brands mentioned.
+- The installer isn't digitally signed yet, so Windows may show a warning. Only download Revix PC from this page.
 
 ## Licencia
 
