@@ -1,0 +1,11 @@
+name: Proponer una idea
+description: Algo que te gustaría que Revix PC haga
+labels: [idea]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Tu idea
+      description: Qué te gustaría y para qué te serviría.
+    validations:
+      required: true
