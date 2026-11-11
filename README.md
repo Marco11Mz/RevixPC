@@ -14,22 +14,35 @@ Revisa y actualiza tu PC con Windows 10 y 11 desde un solo lugar: programas, Win
 - **Salud**: antivirus, firewall, discos, espacio libre, apagados inesperados y pantallazos azules de los últimos 30 días.
 - **Limpieza**, **Inicio de Windows**, **Desinstalar** y **Mi PC** (ficha del equipo y temperaturas).
 - **Modo juego**: mientras juegas no avisa, no revisa y no instala nada.
+- Avisa cuando Windows tiene un **reinicio pendiente** para terminar actualizaciones.
 - Tema claro y oscuro.
 
 ## Instalar
 
-1. Descarga `RevixPC-x.y.z.zip` desde [Releases](https://github.com/Marco11Mz/RevixPC/releases/latest).
-2. Descomprímelo, clic derecho en `RevixPC.ps1` > **Ejecutar con PowerShell** y acepta el aviso de administrador.
-3. Lee y acepta la bienvenida. Revix PC se instala sola en *Archivos de programa* con accesos directos.
+1. Descarga **`RevixPC-Setup-x.y.z.exe`** desde [Releases](https://github.com/Marco11Mz/RevixPC/releases/latest).
+2. Ábrelo, acepta el aviso de administrador y sigue los pasos.
+3. Abre Revix PC desde el Escritorio o el menú Inicio.
+
+Las versiones nuevas se instalan desde la misma app (Ajustes > Buscar nueva versión ahora). Antes de instalar, Revix PC comprueba que el archivo venga de esta página y que su huella SHA-256 sea la publicada.
+
+**Versión portátil** (sin instalar): descarga `RevixPC-Portable-x.y.z.zip`, descomprímelo y abre `RevixPC.exe`. No inicia con Windows ni se actualiza sola.
 
 Para desinstalar: **Configuración > Aplicaciones > Revix PC** (o Ajustes > Avanzado dentro de la app).
 
-> Windows puede mostrar un aviso porque el script no está firmado. Descarga Revix PC solo desde esta página.
+> El instalador todavía no tiene firma digital, así que Windows puede mostrar un aviso. Descarga Revix PC solo desde esta página.
+
+**Comprobar la descarga (opcional):** en PowerShell, `Get-FileHash .\RevixPC-Setup-x.y.z.exe` debe dar la misma huella SHA-256 que aparece en las notas de la versión.
 
 ## Preguntas frecuentes
 
 **Windows dice "Windows protegió su PC" o que el script no es seguro.**
-Pasa con los programas nuevos que no tienen firma digital (cuesta dinero). Si lo descargaste de esta página, pulsa *Más información > Ejecutar de todas formas*. Si lo descargaste de otro sitio, no lo abras.
+Pasa con los programas nuevos que no tienen firma digital. Si lo descargaste de esta página, pulsa *Más información > Ejecutar de todas formas*. Si lo descargaste de otro sitio, no lo abras.
+
+**Mi antivirus marca Revix PC.**
+Puede ser un falso positivo (pasa con programas nuevos sin firma). Revisa que lo descargaste de esta página y que la huella SHA-256 coincida. Si quieres, avísanos en [Issues](https://github.com/Marco11Mz/RevixPC/issues) indicando qué antivirus fue.
+
+**Vengo de ActualizaPC o de la 4.2.0.**
+Instala con `RevixPC-Setup`. El instalador quita lo viejo y Revix PC trae tus ajustes e historial.
 
 **¿Necesita permisos de administrador?**
 Sí, para instalar actualizaciones de Windows, crear puntos de restauración y respaldar drivers.
@@ -53,6 +66,13 @@ Revix PC **no envía tus datos a nadie**. Todo se revisa en tu PC. Solo se conec
 ## Requisitos
 
 Windows 10 u 11 con Windows PowerShell 5.1 (viene con Windows) y el "Instalador de aplicación" (winget) de Microsoft Store.
+
+## Cómo se arma (para quien quiera revisar el código)
+
+- `RevixPC.ps1`: la app (PowerShell 5.1 + WPF).
+- `launcher/Launcher.cs`: `RevixPC.exe`, abre `RevixPC.ps1` dentro del mismo proceso.
+- `installer/RevixPC.iss`: instalador con [Inno Setup](https://jrsoftware.org/isinfo.php).
+- `.github/workflows/release.yml`: GitHub Actions arma el instalador y el .zip al publicar una versión y agrega las huellas SHA-256.
 
 ## Licencia
 

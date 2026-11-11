@@ -1,13 +1,14 @@
 ﻿# ===================================================================
-#  Revix PC 4.2.0  -  Programas, Windows Update, drivers y salud de la PC
+#  Revix PC 4.2.1  -  Programas, Windows Update, drivers y salud de la PC
 #  Windows 10/11 - Windows PowerShell 5.1 (viene con Windows)
 #  Autor: Marco11  ·  Licencia MIT  ·  https://github.com/Marco11Mz/RevixPC
+#  Se abre con RevixPC.exe (lo instala RevixPC-Setup-x.y.z.exe).
 # ===================================================================
-param([switch]$NoElevate, [switch]$Tray, [switch]$Uninstall)
+param([switch]$NoElevate, [switch]$Tray)
 
 $ErrorActionPreference = 'Stop'
 $script:AppName    = 'Revix PC'
-$script:AppVersion = '4.2.0'
+$script:AppVersion = '4.2.1'
 $script:AppId      = 'Marco11.RevixPC'
 $script:GitHubRepo = 'Marco11Mz/RevixPC'
 $script:GitHubUrl  = "https://github.com/$($script:GitHubRepo)"
@@ -16,26 +17,32 @@ $script:IconPath   = Join-Path $PSScriptRoot 'RevixPC.ico'
 if (-not (Test-Path $script:IconPath) -and (Test-Path (Join-Path $PSScriptRoot 'ActualizaPC.ico'))) { $script:IconPath = Join-Path $PSScriptRoot 'ActualizaPC.ico' }
 $script:InstallDir = Join-Path $env:ProgramFiles 'Revix PC'
 $script:PsExe      = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$script:UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RevixPC'
+# Entrada de desinstalación que crea el instalador (Inno Setup agrega "_is1")
+$script:SetupKey   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RevixPC_is1'
 
 # ---------- STA + permisos de administrador ----------
-$extra = ''
-if ($Tray) { $extra += ' -Tray' }
-if ($Uninstall) { $extra += ' -Uninstall' }
-$relaunchArgs = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$PSCommandPath`" -NoElevate$extra"
-
-if ([Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
-    Start-Process $script:PsExe -ArgumentList $relaunchArgs
-    exit
-}
-
+# Lo normal es abrir RevixPC.exe, que ya pide administrador y carga este archivo.
+# Esto solo se usa si alguien ejecuta el .ps1 a mano (copia portátil o pruebas).
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $script:IsAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $script:IsAdmin -and -not $NoElevate) {
+$needSta = ([Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')
+if ($needSta -or (-not $script:IsAdmin -and -not $NoElevate)) {
+    $launcher = Join-Path $PSScriptRoot 'RevixPC.exe'
     try {
-        Start-Process $script:PsExe -Verb RunAs -ArgumentList $relaunchArgs -ErrorAction Stop
+        if (Test-Path -LiteralPath $launcher) {
+            $a = @(); if ($Tray) { $a += '-Tray' }
+            if ($a.Count -gt 0) { Start-Process -FilePath $launcher -ArgumentList $a -ErrorAction Stop } else { Start-Process -FilePath $launcher -ErrorAction Stop }
+            exit
+        }
+        $extra = ''; if ($Tray) { $extra = ' -Tray' }
+        $relaunchArgs = "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`" -NoElevate$extra"
+        if ($script:IsAdmin) { Start-Process $script:PsExe -ArgumentList $relaunchArgs -WindowStyle Minimized -ErrorAction Stop }
+        else { Start-Process $script:PsExe -Verb RunAs -ArgumentList $relaunchArgs -WindowStyle Minimized -ErrorAction Stop }
         exit
-    } catch { }
+    } catch {
+        # Si la persona no acepta el aviso de administrador, sigue sin permisos (solo puede escanear)
+        if ($needSta) { exit }
+    }
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml, System.Windows.Forms, System.Drawing
@@ -45,38 +52,6 @@ $script:OldDataDir = Join-Path $env:APPDATA 'ActualizaPC'
 $script:ErrorLog   = Join-Path $env:TEMP 'RevixPC-error.log'
 function Write-ErrorLog([string]$text) {
     try { Add-Content -Path $script:ErrorLog -Value ("[{0}] {1}" -f (Get-Date), $text) -Encoding UTF8 } catch {}
-}
-
-# ===================================================================
-#  Desinstalar (se llama desde "Aplicaciones" de Windows o desde Ajustes)
-# ===================================================================
-if ($Uninstall) {
-    $title = 'Desinstalar Revix PC'
-    if (-not $script:IsAdmin) {
-        [void][System.Windows.MessageBox]::Show('Para desinstalar Revix PC hay que aceptar el aviso de administrador de Windows.', $title, 'OK', 'Warning')
-        exit
-    }
-    $ans = [System.Windows.MessageBox]::Show('¿Desinstalar Revix PC de este equipo?', $title, 'YesNo', 'Question')
-    if ([string]$ans -ne 'Yes') { exit }
-    # Cerrar la app si está abierta
-    try { $ev = [System.Threading.EventWaitHandle]::OpenExisting('Local\RevixPC_Exit'); [void]$ev.Set(); Start-Sleep -Seconds 2 } catch {}
-    try { Unregister-ScheduledTask -TaskName 'RevixPC' -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-    foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-        $l = Join-Path $folder 'Revix PC.lnk'
-        if (Test-Path -LiteralPath $l) { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue }
-    }
-    try { Remove-Item -Path $script:UninstallKey -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-    if (Test-Path $script:DataDir) {
-        $d = [System.Windows.MessageBox]::Show("¿Borrar también tus ajustes e historial?`n`n$($script:DataDir)", $title, 'YesNo', 'Question')
-        if ([string]$d -eq 'Yes') { Remove-Item -LiteralPath $script:DataDir -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-    if (Test-Path -LiteralPath $script:InstallDir) {
-        Set-Location $env:TEMP
-        $cmd = "/c timeout /t 3 /nobreak >nul & rmdir /s /q `"$($script:InstallDir)`""
-        Start-Process -FilePath (Join-Path $env:WINDIR 'System32\cmd.exe') -ArgumentList $cmd -WindowStyle Hidden
-    }
-    [void][System.Windows.MessageBox]::Show('Revix PC se desinstaló.', $title, 'OK', 'Information')
-    exit
 }
 
 # ---------- Una sola copia abierta ----------
@@ -133,10 +108,17 @@ namespace RevixPC {
         public string Severity { get; set; }
         public string UpdateId { get; set; }
         public bool IsDriver { get; set; }
+        public bool PendingReboot { get; set; }
+        public bool CanSelect { get { return !PendingReboot; } }
+        public string StatusText { get; set; }
+        public string StatusColor { get; set; }
+        public object StatusBrush { get; set; }
+        public string Note { get; set; }
     }
     public class DeviceItem {
         public string StatusText { get; set; }
         public string StatusColor { get; set; }
+        public object StatusBrush { get; set; }
         public string Name { get; set; }
         public string DeviceClass { get; set; }
         public string Manufacturer { get; set; }
@@ -155,6 +137,7 @@ namespace RevixPC {
         public string Value { get; set; }
         public string StatusText { get; set; }
         public string StatusColor { get; set; }
+        public object StatusBrush { get; set; }
         public string ActionText { get; set; }
         public string Link { get; set; }
         public bool HasLink { get; set; }
@@ -171,12 +154,13 @@ namespace RevixPC {
     public class TaskItem : INotifyPropertyChanged {
         public event PropertyChangedEventHandler PropertyChanged;
         void N(string p) { var h = PropertyChanged; if (h != null) h(this, new PropertyChangedEventArgs(p)); }
-        string status, color, detail;
+        string status, color, detail; object brush;
         public string Key { get; set; }
         public string Name { get; set; }
         public string StatusText { get { return status; } set { status = value; N("StatusText"); } }
         public string StatusColor { get { return color; } set { color = value; N("StatusColor"); } }
         public string Detail { get { return detail; } set { detail = value; N("Detail"); } }
+        public object StatusBrush { get { return brush; } set { brush = value; N("StatusBrush"); } }
     }
     public class InfoRow {
         public string Section { get; set; }
@@ -459,9 +443,12 @@ function Apply-Theme($target) {
     if (-not $target) { return }
     $pal = $script:Themes[(Get-EffectiveTheme)]
     foreach ($k in $pal.Keys) {
-        $b = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($pal[$k]))
+        # Se crea con ::new y se agrega con .Add() para que WPF reciba el pincel real (no un objeto envuelto de PowerShell)
+        $color = [System.Windows.Media.Color]([System.Windows.Media.ColorConverter]::ConvertFromString($pal[$k]))
+        $b = [System.Windows.Media.SolidColorBrush]::new($color)
         $b.Freeze()
-        $target.Resources[$k] = $b
+        if ($target.Resources.Contains($k)) { $target.Resources.Remove($k) }
+        $target.Resources.Add($k, $b)
     }
 }
 
@@ -617,17 +604,46 @@ $script:JobWUScan = {
     $session  = New-Object -ComObject Microsoft.Update.Session
     $searcher = $session.CreateUpdateSearcher()
     $res = $searcher.Search("IsInstalled=0 and IsHidden=0")
+    $boot = $null
+    try { $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch {}
+    # Historial: último resultado de cada actualización (la más reciente primero)
+    $last = @{}
+    try {
+        $n = $searcher.GetTotalHistoryCount()
+        if ($n -gt 0) {
+            foreach ($e in $searcher.QueryHistory(0, [Math]::Min($n, 200))) {
+                $id = ''; try { $id = [string]$e.UpdateIdentity.UpdateID } catch {}
+                if ($id -and -not $last.ContainsKey($id)) { $last[$id] = @{ Code = [int]$e.ResultCode; HResult = [int]$e.HResult; Date = $e.Date } }
+            }
+        }
+    } catch {}
     foreach ($u in $res.Updates) {
         $kbs = (@($u.KBArticleIDs) | ForEach-Object { "KB$_" }) -join ', '
         $isDriver = ($u.Type -eq 2)
         $hw = ''; $model = ''; $mfr = ''
         if ($isDriver) { try { $hw = [string]$u.DriverHardwareID; $model = [string]$u.DriverModel; $mfr = [string]$u.DriverManufacturer } catch {} }
+        $id = [string]$u.Identity.UpdateID
+        $h = $last[$id]
+        # Instalada pero espera reiniciar: Windows la pide reinicio o el historial dice que se instaló bien
+        $pending = $false
+        try { if ([bool]$u.RebootRequired) { $pending = $true } } catch {}
+        # (solo si se instaló después del último arranque; si no, Windows la volvió a ofrecer)
+        if ($h -and ($h.Code -eq 2 -or $h.Code -eq 3) -and $boot -and ([datetime]$h.Date).ToLocalTime() -gt $boot) { $pending = $true }
+        $failDate = $null; $failCode = 0
+        if ($h -and $h.Code -eq 4) { $failDate = ([datetime]$h.Date).ToLocalTime(); $failCode = $h.HResult }
         [pscustomobject]@{
-            Title = [string]$u.Title; UpdateId = [string]$u.Identity.UpdateID; KB = $kbs
+            Title = [string]$u.Title; UpdateId = $id; KB = $kbs
             Severity = [string]$u.MsrcSeverity; SizeMB = [math]::Round([double]$u.MaxDownloadSize / 1MB, 1)
             IsDriver = $isDriver; DriverHardwareId = $hw; DriverModel = $model; DriverManufacturer = $mfr
+            PendingReboot = $pending; FailDate = $failDate; FailCode = $failCode
         }
     }
+    # Aviso general de reinicio pendiente (Windows Update o servicio de componentes)
+    $reboot = $false
+    try { if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { $reboot = $true } } catch {}
+    try { if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $reboot = $true } } catch {}
+    try { if ((New-Object -ComObject Microsoft.Update.SystemInfo).RebootRequired) { $reboot = $true } } catch {}
+    [pscustomobject]@{ IsStatus = $true; RebootRequired = $reboot }
 }
 
 # Instalar desde Windows Update, una por una
@@ -1080,11 +1096,12 @@ $script:JobCheckAppUpdate = {
         if ($_.Exception.Message -match '404') { throw 'Todavía no hay versiones publicadas en GitHub.' }
         throw "No se pudo conectar con GitHub: $($_.Exception.Message)"
     }
-    $asset = @($r.assets) | Where-Object { [string]$_.name -match '^RevixPC.*\.zip$' } | Select-Object -First 1
+    # Desde la 4.2.1 se actualiza con el instalador: RevixPC-Setup-x.y.z.exe
+    $asset = @($r.assets) | Where-Object { [string]$_.name -match '^RevixPC-Setup-[\d.]+\.exe$' } | Select-Object -First 1
     $digest = ''
     if ($asset -and $asset.PSObject.Properties['digest']) { $digest = [string]$asset.digest }
-    $zip = ''; if ($asset) { $zip = [string]$asset.browser_download_url }
-    [pscustomobject]@{ Version = ([string]$r.tag_name).TrimStart([char[]]'vV'); Zip = $zip; Notes = [string]$r.body; Digest = $digest; Page = [string]$r.html_url }
+    $setup = ''; if ($asset) { $setup = [string]$asset.browser_download_url }
+    [pscustomobject]@{ Version = ([string]$r.tag_name).TrimStart([char[]]'vV'); Setup = $setup; Notes = [string]$r.body; Digest = $digest; Page = [string]$r.html_url }
 }
 $script:JobDownload = {
     param([string]$Url, [string]$Dest, [string]$Digest, [string]$Repo)
@@ -1093,17 +1110,19 @@ $script:JobDownload = {
     # Solo se descarga desde las releases oficiales del repositorio
     $allowed = "https://github.com/$Repo/releases/download/"
     if (-not $Url.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw "Enlace de descarga no permitido: $Url" }
+    # Sin huella SHA-256 no se instala nada
+    if ($Digest -notmatch '^sha256:([0-9a-fA-F]{64})$') { throw 'GitHub no dio la huella SHA-256 del archivo. No se descargó nada.' }
+    $want = $matches[1]
+    $parent = Split-Path -Parent $Dest
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
     if (Test-Path -LiteralPath $Dest) { Remove-Item -LiteralPath $Dest -Force }
     try {
         Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Dest -Headers @{ 'User-Agent' = 'RevixPC' } -TimeoutSec 180
     } catch { throw "No se pudo descargar: $($_.Exception.Message)" }
     if (-not (Test-Path -LiteralPath $Dest) -or (Get-Item -LiteralPath $Dest).Length -lt 1024) { throw 'La descarga llegó vacía o incompleta.' }
     # Comprobar que el archivo es exactamente el publicado (huella SHA-256 que da GitHub)
-    if ($Digest -match '^sha256:([0-9a-fA-F]{64})$') {
-        $want = $matches[1]
-        $got = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash
-        if ($got -ne $want) { Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue; throw 'El archivo descargado no coincide con el publicado (huella SHA-256 distinta). No se instaló nada.' }
-    }
+    $got = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash
+    if ($got -ne $want) { Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue; throw 'El archivo descargado no coincide con el publicado (huella SHA-256 distinta). No se instaló nada.' }
     $Dest
 }
 
@@ -1120,6 +1139,19 @@ $script:Links = @{
 }
 # Colores sólidos para las pastillas de estado (texto blanco encima, se leen en tema claro y oscuro)
 $script:C = @{ Green = '#15803D'; Amber = '#B45309'; Red = '#DC2626'; Blue = '#2563EB'; Gray = '#64748B'; Purple = '#7C3AED' }
+# Pincel real para el fondo de las pastillas (WPF no siempre convierte el texto "#RRGGBB" en color)
+$script:BrushCache = @{}
+function Set-StatusBrush($obj) {
+    $c = [string]$obj.StatusColor
+    if (-not $c) { return }
+    if (-not $script:BrushCache.ContainsKey($c)) {
+        $col = [System.Windows.Media.Color]([System.Windows.Media.ColorConverter]::ConvertFromString($c))
+        $b = [System.Windows.Media.SolidColorBrush]::new($col)
+        $b.Freeze()
+        $script:BrushCache[$c] = $b
+    }
+    $obj.StatusBrush = $script:BrushCache[$c]
+}
 
 function Get-UpdateKind($u) {
     if ($u.IsDriver) { return 'Driver' }
@@ -1286,6 +1318,7 @@ function ConvertTo-DeviceItems($rawDevices, $wuUpdates) {
         $it.StatusText = $status; $it.StatusColor = $color; $it.Note = $note
         $it.Link = $link; $it.ActionText = $action; $it.HasLink = [bool]$link
         $it.Priority = $prio; $it.IsGeneric = $generic
+        Set-StatusBrush $it
         $list.Add($it)
     }
     return ,@($list | Sort-Object Priority, Name)
@@ -1295,6 +1328,7 @@ function New-HealthRow([string]$section, [string]$item, [string]$value, [string]
     $r = New-Object RevixPC.HealthRow
     $r.Section = $section; $r.Item = $item; $r.Value = $value; $r.StatusText = $status; $r.StatusColor = $color
     $r.Level = $level; $r.Link = $link; $r.ActionText = $action; $r.HasLink = [bool]$link
+    Set-StatusBrush $r
     return $r
 }
 
@@ -1588,7 +1622,7 @@ $script:XamlText = @'
       </Style.Triggers>
     </Style>
     <DataTemplate x:Key="StatusCell">
-      <Border Style="{StaticResource Pill}" Background="{Binding StatusColor}">
+      <Border Style="{StaticResource Pill}" Background="{Binding StatusBrush}">
         <TextBlock Text="{Binding StatusText}" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="12.5"/>
       </Border>
     </DataTemplate>
@@ -2045,12 +2079,18 @@ $script:XamlText = @'
           </WrapPanel>
           <DataGrid x:Name="GridWU" Grid.Row="1">
             <DataGrid.Columns>
-              <DataGridTemplateColumn Width="42" CellTemplate="{StaticResource CheckCell}"/>
+              <DataGridTemplateColumn Width="42">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate><CheckBox IsChecked="{Binding Selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanSelect}" HorizontalAlignment="Center"/></DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
               <DataGridTextColumn Header="Actualización" Binding="{Binding Title}" Width="*"/>
-              <DataGridTextColumn Header="Tipo" Binding="{Binding Kind}" Width="110"/>
-              <DataGridTextColumn Header="Gravedad" Binding="{Binding Severity}" Width="100"/>
-              <DataGridTextColumn Header="KB" Binding="{Binding KB}" Width="110"/>
-              <DataGridTextColumn Header="Tamaño" Binding="{Binding Size}" Width="90"/>
+              <DataGridTemplateColumn Header="Estado" Width="190" CellTemplate="{StaticResource StatusCell}"/>
+              <DataGridTextColumn Header="Tipo" Binding="{Binding Kind}" Width="100"/>
+              <DataGridTextColumn Header="Gravedad" Binding="{Binding Severity}" Width="95"/>
+              <DataGridTextColumn Header="KB" Binding="{Binding KB}" Width="100"/>
+              <DataGridTextColumn Header="Tamaño" Binding="{Binding Size}" Width="85"/>
+              <DataGridTextColumn Header="Nota" Binding="{Binding Note}" Width="200"/>
             </DataGrid.Columns>
           </DataGrid>
         </Grid>
@@ -2318,8 +2358,7 @@ $script:XamlText = @'
               <StackPanel Margin="0,10,0,0">
                 <TextBlock x:Name="InstallInfo" Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
                 <WrapPanel>
-                  <Button x:Name="BtnInstallApp" Content="Reparar instalación" Style="{StaticResource Btn}"/>
-                  <Button x:Name="BtnUpdateFromZip" Content="Instalar desde un archivo .zip" Style="{StaticResource Btn}"/>
+                  <Button x:Name="BtnInstallApp" Content="Descargar instalador" Style="{StaticResource Btn}"/>
                   <Button x:Name="BtnOpenData" Content="Abrir carpeta de datos" Style="{StaticResource Btn}"/>
                   <Button x:Name="BtnUninstallApp" Content="Desinstalar Revix PC" Style="{StaticResource Btn}"/>
                 </WrapPanel>
@@ -2384,7 +2423,7 @@ try {
              'BtnProgAuto','BtnRollback','TabStartup','BootInfo','BtnStartupScan','BtnTaskMgr','GridStartup',
              'TabApps','AppsInfo','TxtAppSearch','BtnUninstall','BtnAppsScan','BtnAppsSettings','GridApps',
              'TabMyPC','BtnCopySpecs','BtnPcScan','BtnBatteryReport','GridSpecs','GridTemps',
-             'ChkGameMode','TxtGames','ChkTempAlert','BtnUpdateFromZip','BtnCheckAppUpdate','ChkAppUpdates',
+             'ChkGameMode','TxtGames','ChkTempAlert','BtnCheckAppUpdate','ChkAppUpdates',
              'CmbTheme','BtnTheme','ThemeIcon','AboutLogo','AboutTitle','BtnGitHub','BtnLicense','BtnReport','BtnUninstallApp','ExpAdvanced',
              'TabHome','NavList','PageTitle','GameDot','GameChipText','VersionText','ScoreArc','ScoreText','ScoreTitle','ScoreSub',
              'BtnHomeUpdate','BtnHomeClean','CardProg','CardWU','CardDrv','CardHealth','SubPrograms','SubWU','SubDrivers','SubHealth',
@@ -2404,6 +2443,8 @@ try {
     # ---------- Estado ----------
     $script:ProgramItems = New-Object 'System.Collections.Generic.List[RevixPC.ProgramItem]'
     $script:WUItems      = New-Object 'System.Collections.Generic.List[RevixPC.UpdateItem]'
+    $script:WURebootItems = New-Object 'System.Collections.Generic.List[RevixPC.UpdateItem]'
+    $script:RebootPending = $false
     $script:CleanItems   = New-Object 'System.Collections.Generic.List[RevixPC.CleanItem]'
     $script:Tasks        = New-Object 'System.Collections.ObjectModel.ObservableCollection[RevixPC.TaskItem]'
     $script:WUUpdates    = @()
@@ -2677,12 +2718,13 @@ try {
     function Add-TaskRow([string]$key, [string]$name) {
         $t = New-Object RevixPC.TaskItem
         $t.Key = $key; $t.Name = $name; $t.StatusText = 'En cola'; $t.StatusColor = $script:C.Gray; $t.Detail = ''
+        Set-StatusBrush $t
         $script:Tasks.Add($t)
     }
     function Set-TaskRow([string]$key, [string]$status, [string]$color, [string]$detail) {
         foreach ($t in $script:Tasks) {
             if ($t.Key -eq $key -and ($t.StatusText -eq 'En cola' -or $t.StatusText -like '*...')) {
-                $t.StatusText = $status; $t.StatusColor = $color
+                $t.StatusText = $status; $t.StatusColor = $color; Set-StatusBrush $t
                 if ($null -ne $detail) { $t.Detail = $detail }
                 break
             }
@@ -2690,7 +2732,7 @@ try {
         $script:GridTasks.Items.Refresh()
     }
     function Set-QueuedCancelled {
-        foreach ($t in $script:Tasks) { if ($t.StatusText -eq 'En cola') { $t.StatusText = 'Cancelado'; $t.StatusColor = $script:C.Gray } }
+        foreach ($t in $script:Tasks) { if ($t.StatusText -eq 'En cola') { $t.StatusText = 'Cancelado'; $t.StatusColor = $script:C.Gray; Set-StatusBrush $t } }
         $script:GridTasks.Items.Refresh()
     }
     function Reset-Cancel { try { Remove-Item (Get-CancelFile) -Force -ErrorAction SilentlyContinue } catch {} }
@@ -2713,7 +2755,7 @@ try {
     function Refresh-Programs {
         $script:GridPrograms.ItemsSource = @($script:ProgramItems | Where-Object { $script:ChkShowIgnored.IsChecked -or -not $_.Hidden })
     }
-    function Refresh-WU { $script:GridWU.ItemsSource = @($script:WUItems) }
+    function Refresh-WU { $script:GridWU.ItemsSource = @(@($script:WUItems) + @($script:WURebootItems)) }
     function Refresh-Devices {
         $script:GridDevices.ItemsSource = @($script:DeviceItems | Where-Object { $script:ChkShowGeneric.IsChecked -or -not $_.IsGeneric })
     }
@@ -2783,21 +2825,38 @@ try {
                 Add-History 'Escanear Windows Update' "Error: $err"
                 return
             }
-            $script:WUUpdates = @($out)
-            $script:WUItems.Clear()
-            foreach ($u in $script:WUUpdates) {
+            $st = $out | Where-Object { $_.IsStatus } | Select-Object -Last 1
+            $all = @($out | Where-Object { -not $_.IsStatus })
+            # Las que ya se instalaron y solo esperan reiniciar no cuentan como pendientes
+            $script:WUUpdates = @($all | Where-Object { -not $_.PendingReboot })
+            $script:WUItems.Clear(); $script:WURebootItems.Clear()
+            foreach ($u in $all) {
                 $it = New-Object RevixPC.UpdateItem
                 $it.Title = [string]$u.Title; $it.UpdateId = [string]$u.UpdateId; $it.KB = [string]$u.KB
                 $it.IsDriver = [bool]$u.IsDriver; $it.Kind = Get-UpdateKind $u
                 $it.Severity = Get-SeverityText ([string]$u.Severity)
                 if ([double]$u.SizeMB -gt 0) { $it.Size = ('{0:N1} MB' -f [double]$u.SizeMB) } else { $it.Size = '' }
-                $script:WUItems.Add($it)
+                $it.PendingReboot = [bool]$u.PendingReboot
+                if ($it.PendingReboot) {
+                    $it.StatusText = 'Instalada · falta reiniciar'; $it.StatusColor = $script:C.Blue
+                    $it.Note = 'Se termina de aplicar al reiniciar'
+                } elseif ($u.FailDate) {
+                    $it.StatusText = 'Falló antes'; $it.StatusColor = $script:C.Red
+                    $it.Note = 'Falló el ' + ([datetime]$u.FailDate).ToString('dd/MM/yyyy')
+                    if ([int]$u.FailCode -ne 0) { $it.Note += (' (0x{0:X8})' -f [int]$u.FailCode) }
+                }
+                Set-StatusBrush $it
+                if ($it.PendingReboot) { $script:WURebootItems.Add($it) } else { $script:WUItems.Add($it) }
             }
+            $script:RebootPending = ($script:WURebootItems.Count -gt 0) -or ($st -and $st.RebootRequired)
             $script:Scanned.WU = $true
             Refresh-WU; Update-Summary; Rebuild-Devices
             $nw = @($script:WUItems | Where-Object { -not $_.IsDriver }).Count
             $nd = @($script:WUItems | Where-Object { $_.IsDriver }).Count
-            Add-History 'Escanear Windows Update' "$nw de Windows, $nd drivers"
+            $msg = "$nw de Windows, $nd drivers"
+            if ($script:WURebootItems.Count -gt 0) { $msg += ", $($script:WURebootItems.Count) esperan reinicio" }
+            elseif ($script:RebootPending) { $msg += ', reinicio pendiente' }
+            Add-History 'Escanear Windows Update' $msg
         })
     }
 
@@ -3268,153 +3327,36 @@ try {
         Start-Process $file
     })
 
-    # ---------- Instalación (Archivos de programa, .exe, accesos directos y entrada en Aplicaciones) ----------
-    function Get-InstalledExe { Join-Path $script:InstallDir 'RevixPC.exe' }
-    function Get-InstalledPs1 { Join-Path $script:InstallDir 'RevixPC.ps1' }
-    function Test-RunningInstalled {
-        try { return ([IO.Path]::GetFullPath($script:AppDir).TrimEnd('\') -ieq [IO.Path]::GetFullPath($script:InstallDir).TrimEnd('\')) } catch { return $false }
-    }
-    function Get-ScriptVersion([string]$ps1Path) {
+    # ---------- Instalación (la hace el instalador RevixPC-Setup-x.y.z.exe) ----------
+    function Get-SetupInfo {
         try {
-            $txt = Get-Content -Raw -LiteralPath $ps1Path -Encoding UTF8
-            $m = [regex]::Match($txt, '\$script:AppVersion\s*=\s*''([^'']+)''')
-            if ($m.Success) { return $m.Groups[1].Value }
-        } catch {}
-        return '?'
+            $k = Get-ItemProperty -Path $script:SetupKey -ErrorAction Stop
+            return [pscustomobject]@{ Dir = ([string]$k.InstallLocation).TrimEnd('\'); Uninstaller = ([string]$k.UninstallString).Trim('"'); Version = [string]$k.DisplayVersion }
+        } catch { return $null }
+    }
+    function Get-InstalledExe {
+        $s = Get-SetupInfo
+        if ($s -and $s.Dir) { return (Join-Path $s.Dir 'RevixPC.exe') }
+        return (Join-Path $script:InstallDir 'RevixPC.exe')
+    }
+    function Test-Installed { return [bool](Get-SetupInfo) }
+    function Test-RunningInstalled {
+        $s = Get-SetupInfo
+        if (-not $s -or -not $s.Dir) { return $false }
+        try { return ([IO.Path]::GetFullPath($script:AppDir).TrimEnd('\') -ieq [IO.Path]::GetFullPath($s.Dir).TrimEnd('\')) } catch { return $false }
     }
     function Compare-AppVersion([string]$a, [string]$b) {
         try { return ([version]$a).CompareTo([version]$b) } catch { return 0 }
-    }
-
-    # Quita lo que dejó ActualizaPC 4.1 (tarea de inicio, accesos directos y su carpeta vieja)
-    function Remove-OldActualizaPC {
-        try { Unregister-ScheduledTask -TaskName 'ActualizaPC' -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-        foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-            $l = Join-Path $folder 'ActualizaPC.lnk'
-            if (Test-Path -LiteralPath $l) { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue }
-        }
-        $old = Join-Path $env:LOCALAPPDATA 'Programs\ActualizaPC'
-        $same = $false
-        try { $same = ([IO.Path]::GetFullPath($script:AppDir).TrimEnd('\') -ieq [IO.Path]::GetFullPath($old).TrimEnd('\')) } catch {}
-        if ((Test-Path -LiteralPath $old) -and -not $same) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-
-    function Register-Uninstall {
-        $k = $script:UninstallKey
-        if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
-        $exe = Get-InstalledExe
-        $icon = Join-Path $script:InstallDir 'RevixPC.ico'
-        if (Test-Path $exe) { $icon = "`"$exe`",0" }
-        $size = 0
-        try { $size = [int](((Get-ChildItem -LiteralPath $script:InstallDir -Recurse -File | Measure-Object Length -Sum).Sum) / 1KB) } catch {}
-        $str = @{
-            DisplayName = 'Revix PC'; DisplayVersion = $script:AppVersion; Publisher = 'Marco11'
-            InstallLocation = $script:InstallDir; DisplayIcon = $icon
-            UninstallString = "`"$($script:PsExe)`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Get-InstalledPs1)`" -Uninstall"
-            URLInfoAbout = $script:GitHubUrl; HelpLink = "$($script:GitHubUrl)/issues"
-            InstallDate = (Get-Date).ToString('yyyyMMdd')
-        }
-        foreach ($n in $str.Keys) { New-ItemProperty -Path $k -Name $n -Value $str[$n] -PropertyType String -Force | Out-Null }
-        foreach ($n in 'NoModify', 'NoRepair') { New-ItemProperty -Path $k -Name $n -Value 1 -PropertyType DWord -Force | Out-Null }
-        New-ItemProperty -Path $k -Name 'EstimatedSize' -Value $size -PropertyType DWord -Force | Out-Null
-    }
-
-    function Install-App([string]$SourceDir = $script:AppDir) {
-        if (-not $script:IsAdmin) { throw 'Para instalar hace falta abrir Revix PC como administrador.' }
-        $dir = $script:InstallDir
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        $same = $false
-        try { $same = ([IO.Path]::GetFullPath($SourceDir).TrimEnd('\') -ieq [IO.Path]::GetFullPath($dir).TrimEnd('\')) } catch {}
-        if (-not $same) {
-            Copy-Item -LiteralPath (Join-Path $SourceDir 'RevixPC.ps1') -Destination (Get-InstalledPs1) -Force
-            $icoSrc = Join-Path $SourceDir 'RevixPC.ico'
-            if (-not (Test-Path $icoSrc)) { $icoSrc = Join-Path $SourceDir 'ActualizaPC.ico' }
-            if (Test-Path $icoSrc) { Copy-Item -LiteralPath $icoSrc -Destination (Join-Path $dir 'RevixPC.ico') -Force }
-            foreach ($f in 'LICENSE', 'README.md', 'CHANGELOG.md') {
-                $src = Join-Path $SourceDir $f
-                if (Test-Path $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dir $f) -Force }
-            }
-        }
-        $exe = Get-InstalledExe
-        $ico = Join-Path $dir 'RevixPC.ico'
-        $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-        if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
-        $exeOk = $false
-        if (Test-Path $csc) {
-            $tmp = Join-Path $env:TEMP ('RevixPC-build-' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-            $cs = @'
-using System;
-using System.Diagnostics;
-using System.IO;
-static class Launcher {
-    [STAThread]
-    static void Main(string[] args) {
-        string dir = AppDomain.CurrentDomain.BaseDirectory;
-        string ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"System32\WindowsPowerShell\v1.0\powershell.exe");
-        string script = Path.Combine(dir, "RevixPC.ps1");
-        string extra = "";
-        foreach (string a in args) { if (a == "-Tray") extra += " -Tray"; }
-        var psi = new ProcessStartInfo(ps, "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File \"" + script + "\" -NoElevate" + extra);
-        psi.UseShellExecute = false;
-        psi.CreateNoWindow = true;
-        psi.WorkingDirectory = dir;
-        Process.Start(psi);
-    }
-}
-'@
-            $manifest = @'
-<?xml version="1.0" encoding="utf-8"?>
-<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="4.2.0.0" name="RevixPC"/>
-  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
-    <security><requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-      <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
-    </requestedPrivileges></security>
-  </trustInfo>
-</assembly>
-'@
-            Set-Content -Path (Join-Path $tmp 'Launcher.cs') -Value $cs -Encoding UTF8
-            Set-Content -Path (Join-Path $tmp 'app.manifest') -Value $manifest -Encoding UTF8
-            $cscArgs = @('/nologo', '/target:winexe', "/out:$exe", "/win32manifest:$(Join-Path $tmp 'app.manifest')")
-            if (Test-Path $ico) { $cscArgs += "/win32icon:$ico" }
-            $cscArgs += (Join-Path $tmp 'Launcher.cs')
-            $o = & $csc @cscArgs 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and (Test-Path $exe)) { $exeOk = $true } else { Write-ErrorLog "csc: $o" }
-            Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        $sh = New-Object -ComObject WScript.Shell
-        foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-            $path = Join-Path $folder 'Revix PC.lnk'
-            $lnk = $sh.CreateShortcut($path)
-            if ($exeOk) {
-                $lnk.TargetPath = $exe; $lnk.IconLocation = "$exe,0"
-            } else {
-                $lnk.TargetPath = $script:PsExe
-                $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$(Get-InstalledPs1)`""
-                if (Test-Path $ico) { $lnk.IconLocation = "$ico,0" }
-            }
-            $lnk.WorkingDirectory = $dir
-            $lnk.Description = 'Revix PC - actualizaciones, drivers y salud de la PC'
-            $lnk.Save()
-            [void][RevixPC.Native]::SetShortcutAppId($path, $script:AppId)
-        }
-        Register-Uninstall
-        Remove-OldActualizaPC
-        if ($script:Config.StartWithWindows) { [void](Set-Startup $true) }
-        return $exeOk
     }
 
     function Set-Startup([bool]$on) {
         $name = 'RevixPC'
         try {
             if (-not $on) { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue; return $true }
-            $user = "$env:USERDOMAIN\$env:USERNAME"
             $exe = Get-InstalledExe
-            $ps1 = Get-InstalledPs1
-            if (-not (Test-Path $ps1)) { throw 'Primero instala Revix PC (Ajustes > Avanzado > Reparar instalación).' }
-            if (Test-Path $exe) { $act = New-ScheduledTaskAction -Execute $exe -Argument '-Tray' }
-            else { $act = New-ScheduledTaskAction -Execute $script:PsExe -Argument "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$ps1`" -Tray -NoElevate" }
+            if (-not (Test-Installed) -or -not (Test-Path -LiteralPath $exe)) { throw 'Para iniciar con Windows, instala Revix PC con el instalador (RevixPC-Setup).' }
+            $user = "$env:USERDOMAIN\$env:USERNAME"
+            $act = New-ScheduledTaskAction -Execute $exe -Argument '-Tray'
             $trg = New-ScheduledTaskTrigger -AtLogOn -User $user
             $prn = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
             $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -3428,28 +3370,22 @@ static class Launcher {
     }
 
     function Update-InstallInfo {
-        if (Test-RunningInstalled) { $script:InstallInfo.Text = "Instalada en $($script:InstallDir). Puedes anclar el acceso directo a la barra de tareas (clic derecho > Anclar)." }
-        elseif (Test-Path (Get-InstalledPs1)) { $script:InstallInfo.Text = "Estás usando una copia suelta. La versión instalada está en $($script:InstallDir)." }
-        else { $script:InstallInfo.Text = 'Revix PC no está instalada en este equipo.' }
-        if (Test-Path (Get-InstalledPs1)) { $script:BtnInstallApp.Content = 'Reparar instalación' } else { $script:BtnInstallApp.Content = 'Instalar en este equipo' }
-        $script:BtnUninstallApp.IsEnabled = (Test-Path (Get-InstalledPs1))
+        $s = Get-SetupInfo
+        if (Test-RunningInstalled) { $script:InstallInfo.Text = "Instalada en $($s.Dir). Puedes anclar el acceso directo a la barra de tareas (clic derecho > Anclar)." }
+        elseif ($s) { $script:InstallInfo.Text = "Estás usando una copia portátil. La versión instalada ($($s.Version)) está en $($s.Dir)." }
+        else { $script:InstallInfo.Text = 'Estás usando una copia portátil (sin instalar). Para iniciar con Windows y recibir actualizaciones automáticas, instala Revix PC con el instalador.' }
+        $script:BtnInstallApp.Visibility = $(if ($s) { 'Collapsed' } else { 'Visible' })
+        $script:BtnUninstallApp.IsEnabled = [bool]($s -and $s.Uninstaller -and (Test-Path -LiteralPath $s.Uninstaller))
     }
 
-    $script:BtnInstallApp.Add_Click({
-        try {
-            [void](Install-App)
-            Add-History 'Instalar Revix PC' $script:InstallDir
-            Update-InstallInfo
-            Show-Msg "Listo. Revix PC está instalada en:`n$($script:InstallDir)`n`nTienes accesos directos en el Escritorio y el menú Inicio." | Out-Null
-        } catch {
-            Write-ErrorLog "instalar: $_"
-            Show-Msg "No se pudo instalar:`n$($_.Exception.Message)" 'Warning' | Out-Null
-        }
-    })
+    $script:BtnInstallApp.Add_Click({ Start-Process "$($script:GitHubUrl)/releases/latest" })
     $script:BtnUninstallApp.Add_Click({
-        $ps1 = Get-InstalledPs1
-        if (-not (Test-Path $ps1)) { return }
-        Start-Process $script:PsExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$ps1`" -Uninstall"
+        $s = Get-SetupInfo
+        if (-not $s -or -not (Test-Path -LiteralPath $s.Uninstaller)) { Start-Process 'ms-settings:appsfeatures'; return }
+        $ans = Show-Msg '¿Desinstalar Revix PC? Se cerrará la app y se abrirá el desinstalador de Windows.' 'Question' 'YesNo'
+        if ($ans -ne 'Yes') { return }
+        Start-Process -FilePath $s.Uninstaller
+        Exit-App
     })
     $script:BtnOpenData.Add_Click({ Start-Process explorer.exe $script:DataDir })
     $script:BtnOpenRestore.Add_Click({ Start-Process 'rstrui.exe' })
@@ -3870,6 +3806,11 @@ static class Launcher {
         $t = [string]$b.Tag
         if ($t -like 'tab:*') { Go-Tab ([int]$t.Substring(4)) }
         elseif ($t -eq 'perfmon-rel') { Start-Process 'perfmon.exe' -ArgumentList '/rel' }
+        elseif ($t -eq 'reboot') {
+            if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual (mira la pestaña Progreso).' | Out-Null; return }
+            $ans = Show-Msg 'Se reiniciará la PC para terminar de instalar las actualizaciones. Guarda tu trabajo y cierra tus programas. ¿Reiniciar ahora?' 'Question' 'YesNo'
+            if ($ans -eq 'Yes') { Add-History 'Reiniciar PC' 'Para terminar actualizaciones de Windows'; Restart-Computer -Force }
+        }
         elseif ($t -match '^https://') { Start-Process $t }
     })
     $script:BtnHomeUpdate.Add_Click({ Update-Programs @($script:ProgramItems) })
@@ -3946,6 +3887,12 @@ static class Launcher {
         if ($script:Scanned.Health) { Set-Badge $script:BadgeHealthBox $script:BadgeHealth $warn.Count }
 
         $todo = New-Object 'System.Collections.Generic.List[RevixPC.TodoItem]'
+        if ($script:RebootPending) {
+            $nr = $script:WURebootItems.Count
+            $d = 'Windows terminará de aplicar cambios al reiniciar'
+            if ($nr -gt 0) { $d = "$nr actualización(es) instaladas esperan el reinicio" }
+            $todo.Add((New-Todo 'Reinicio pendiente' $d 'Windows' '#1D4ED8' 'R' 'Reiniciar' 'reboot'))
+        }
         if ($wuWin.Count -gt 0) {
             $d = 'Parches y mejoras de Windows'; if ($sec -gt 0) { $d = "$sec de seguridad · pueden pedir reiniciar" }
             $todo.Add((New-Todo "Instala $($wuWin.Count) actualización(es) de Windows" $d 'Windows' '#2F6FEB' 'W' 'Ver' 'tab:2'))
@@ -4083,16 +4030,6 @@ static class Launcher {
     })
 
     # ---------- Actualizar la propia app (releases de GitHub) ----------
-    function Restart-App {
-        $exe = Get-InstalledExe
-        if (-not (Test-Path $exe)) {
-            Show-Msg 'Listo. Cierra y vuelve a abrir Revix PC para usar la versión nueva.' | Out-Null
-            return
-        }
-        $cmd = "Start-Sleep -Seconds 3; Start-Process -FilePath '$exe'"
-        Start-Process $script:PsExe -ArgumentList "-NoProfile -WindowStyle Hidden -Command `"$cmd`"" -WindowStyle Hidden
-        Exit-App
-    }
     function ConvertTo-PlainNotes([string]$md) {
         if (-not $md) { return '' }
         $t = $md -replace "`r", ''
@@ -4101,24 +4038,16 @@ static class Launcher {
         if ($t.Length -gt 1200) { $t = $t.Substring(0, 1200) + '...' }
         return $t
     }
-    function Install-FromZip([string]$zip, [string]$notes = '') {
-        $tmp = Join-Path $env:TEMP ('RevixPC-upd-' + [guid]::NewGuid().ToString('N'))
+    # Ejecuta el instalador nuevo (ya verificado) y cierra la app; el instalador la vuelve a abrir
+    function Start-SetupUpdate([string]$setup, [string]$version, [string]$notes) {
         try {
-            Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-            $ps1 = Get-ChildItem -LiteralPath $tmp -Filter 'RevixPC.ps1' -Recurse | Select-Object -First 1
-            if (-not $ps1) { Show-Msg 'Ese .zip no contiene RevixPC.ps1.' 'Warning' | Out-Null; return }
-            $newVer = Get-ScriptVersion $ps1.FullName
-            $ans = Show-Msg "¿Instalar Revix PC $newVer? (tienes la $($script:AppVersion))`n`nTus ajustes e historial se mantienen. La app se reiniciará.`n`nInstala solo archivos descargados de la página oficial de Revix PC en GitHub." 'Question' 'YesNo'
-            if ($ans -ne 'Yes') { return }
-            [void](Install-App -SourceDir $ps1.DirectoryName)
             $script:Config.UpdateNotes = $notes; Save-Config
-            Add-History 'Actualizar Revix PC' "$($script:AppVersion) -> $newVer"
-            Restart-App
+            Add-History 'Actualizar Revix PC' "$($script:AppVersion) -> $version"
+            Start-Process -FilePath $setup -ArgumentList '/SILENT', '/NORESTART', '/UPDATE' -ErrorAction Stop
+            Exit-App
         } catch {
             Write-ErrorLog "actualizar app: $_"
-            Show-Msg "No se pudo actualizar:`n$($_.Exception.Message)" 'Warning' | Out-Null
-        } finally {
-            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+            Show-Msg "No se pudo abrir el instalador:`n$($_.Exception.Message)" 'Warning' | Out-Null
         }
     }
     function Check-AppUpdate([bool]$quiet) {
@@ -4142,31 +4071,32 @@ static class Launcher {
         $notes = ConvertTo-PlainNotes $r.Notes
         $txt = "Hay una versión nueva de Revix PC: $($r.Version) (tienes la $($script:AppVersion))."
         if ($notes) { $txt += "`n`nNovedades:`n$notes" }
-        if (-not $r.Zip) {
-            $txt += "`n`nEsta versión no trae archivo para instalar automáticamente. ¿Abrir la página de descarga?"
+        $why = ''
+        if (-not (Test-RunningInstalled)) { $why = 'Estás usando una copia portátil, así que se actualiza a mano.' }
+        elseif (-not $r.Setup) { $why = 'Esta versión no trae instalador para actualizar automáticamente.' }
+        elseif ($r.Digest -notmatch '^sha256:[0-9a-fA-F]{64}$') { $why = 'GitHub no dio la huella SHA-256 del instalador, así que no se puede comprobar.' }
+        if ($why) {
+            $txt += "`n`n$why ¿Abrir la página de descarga?"
             if ((Show-Msg $txt 'Question' 'YesNo') -eq 'Yes' -and $r.Page -match '^https://github\.com/') { Start-Process $r.Page }
             return
         }
-        $ans = Show-Msg "$txt`n`n¿Descargar e instalar ahora?" 'Question' 'YesNo'
+        if (Test-AnyRunning $script:WorkKinds) { Show-Msg "$txt`n`nHay una tarea en curso (mira Progreso). Cuando termine, búscala otra vez en Ajustes > Buscar nueva versión ahora." | Out-Null; return }
+        $ans = Show-Msg "$txt`n`n¿Descargar e instalar ahora? Revix PC se cerrará y se abrirá sola al terminar." 'Question' 'YesNo'
         if ($ans -ne 'Yes') { return }
         $script:DownloadNotes = $notes
-        $dest = Join-Path $env:TEMP ("RevixPC-$($r.Version).zip")
-        [void](Start-Bg 'AppDl' 'Descargando Revix PC' $script:JobDownload @([string]$r.Zip, $dest, [string]$r.Digest, $script:GitHubRepo) {
+        $script:DownloadVersion = [string]$r.Version
+        $dir = Join-Path $env:TEMP ('RevixPC-upd-' + [guid]::NewGuid().ToString('N'))
+        $dest = Join-Path $dir ("RevixPC-Setup-$($r.Version).exe")
+        [void](Start-Bg 'AppDl' 'Descargando Revix PC' $script:JobDownload @([string]$r.Setup, $dest, [string]$r.Digest, $script:GitHubRepo) {
             param($out2, $err2)
             if ($err2) { Show-Msg "No se pudo descargar:`n$err2" 'Warning' | Out-Null; return }
-            $zipPath = [string]($out2 | Select-Object -Last 1)
-            if (-not $zipPath -or -not (Test-Path -LiteralPath $zipPath)) { Show-Msg 'La descarga no se completó. Intenta de nuevo en unos minutos.' 'Warning' | Out-Null; return }
-            Install-FromZip $zipPath $script:DownloadNotes
-            Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+            $setup = [string]($out2 | Select-Object -Last 1)
+            if (-not $setup -or -not (Test-Path -LiteralPath $setup)) { Show-Msg 'La descarga no se completó. Intenta de nuevo en unos minutos.' 'Warning' | Out-Null; return }
+            if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Hay una tarea en curso. Cuando termine, busca otra vez la versión nueva en Ajustes.' | Out-Null; return }
+            Start-SetupUpdate $setup $script:DownloadVersion $script:DownloadNotes
         })
     }
     $script:BtnCheckAppUpdate.Add_Click({ Check-AppUpdate $false })
-    $script:BtnUpdateFromZip.Add_Click({
-        $dlg = New-Object Microsoft.Win32.OpenFileDialog
-        $dlg.Filter = 'Revix PC (*.zip)|*.zip'
-        $dlg.InitialDirectory = Join-Path $env:USERPROFILE 'Downloads'
-        if ($dlg.ShowDialog($script:Window)) { Install-FromZip $dlg.FileName }
-    })
 
     # ---------- Ajustes ----------
     function Set-AutoTimer {
@@ -4186,10 +4116,11 @@ static class Launcher {
             $script:ChkStartup.IsChecked = -not $want
             Show-Msg 'Para cambiar esto abre Revix PC como administrador.' 'Warning' | Out-Null; return
         }
-        if ($want -and -not (Test-Path (Get-InstalledPs1))) {
-            $ans = Show-Msg "Para iniciar con Windows, Revix PC tiene que estar instalada. ¿Instalar ahora?" 'Question' 'YesNo'
-            if ($ans -eq 'Yes') { try { [void](Install-App); Update-InstallInfo } catch { Write-ErrorLog "instalar: $_" } }
-            else { $script:ChkStartup.IsChecked = $false; return }
+        if ($want -and -not (Test-Installed)) {
+            $script:ChkStartup.IsChecked = $false
+            $ans = Show-Msg "Para iniciar con Windows, instala Revix PC con el instalador (RevixPC-Setup). ¿Abrir la página de descarga?" 'Question' 'YesNo'
+            if ($ans -eq 'Yes') { Start-Process "$($script:GitHubUrl)/releases/latest" }
+            return
         }
         if (Set-Startup $want) {
             $script:Config.StartWithWindows = $want; Save-Config
@@ -4273,16 +4204,11 @@ static class Launcher {
     $window.Add_ContentRendered({
         if ($script:FirstRenderDone) { return }
         $script:FirstRenderDone = $true
-        # 1) Bienvenida (una sola vez): licencias, responsabilidad, privacidad e instalación automática
+        # 1) Bienvenida (una sola vez): licencias, responsabilidad y privacidad
         if (-not $script:Config.WelcomeAccepted) {
-            $willInstall = ($script:IsAdmin -and -not (Test-RunningInstalled) -and -not (Test-Path (Get-InstalledPs1)))
-            if (-not (Show-Welcome $willInstall)) { Exit-App; return }
+            if (-not (Show-Welcome $false)) { Exit-App; return }
             $script:Config.WelcomeAccepted = $true; $script:Config.LastVersion = $script:AppVersion; Save-Config
             Add-History 'Bienvenida' 'Aviso de licencias y responsabilidad aceptado'
-            if ($willInstall) {
-                try { [void](Install-App); Update-InstallInfo; Add-History 'Instalar Revix PC' $script:InstallDir }
-                catch { Write-ErrorLog "instalar: $_"; Show-Msg "No se pudo instalar:`n$($_.Exception.Message)`n`nPuedes intentarlo en Ajustes > Avanzado." 'Warning' | Out-Null }
-            }
         }
         # 2) Novedades después de actualizar
         elseif ([string]$script:Config.LastVersion -ne $script:AppVersion) {
@@ -4291,14 +4217,6 @@ static class Launcher {
             if ($notes) { $txt += "`n`nNovedades:`n$notes" }
             $script:Config.LastVersion = $script:AppVersion; $script:Config.UpdateNotes = ''; Save-Config
             Show-Msg $txt | Out-Null
-        }
-        # 3) Copia suelta más nueva que la instalada: ofrecer actualizar la instalación
-        if ($script:IsAdmin -and -not (Test-RunningInstalled) -and (Test-Path (Get-InstalledPs1))) {
-            $instVer = Get-ScriptVersion (Get-InstalledPs1)
-            if ((Compare-AppVersion $script:AppVersion $instVer) -gt 0) {
-                $ans = Show-Msg "Tienes instalada la versión $instVer. ¿Actualizar la instalación a la $($script:AppVersion)?" 'Question' 'YesNo'
-                if ($ans -eq 'Yes') { try { [void](Install-App); Update-InstallInfo; Add-History 'Actualizar Revix PC' "$instVer -> $($script:AppVersion)" } catch { Show-Msg "No se pudo actualizar:`n$($_.Exception.Message)" 'Warning' | Out-Null } }
-            }
         }
         if (-not $script:InitialScanDone) { Start-ScanAll }
         if (-not $script:AppUpdChecked) { $script:AppUpdChecked = $true; if ($script:Config.CheckAppUpdates) { Check-AppUpdate $true } }
