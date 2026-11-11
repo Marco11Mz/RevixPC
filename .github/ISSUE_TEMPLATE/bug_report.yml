@@ -1,0 +1,35 @@
+name: Reportar un problema
+description: Algo no funciona como debería
+labels: [error]
+body:
+  - type: markdown
+    attributes:
+      value: "Gracias por avisar. No pegues datos personales (nombres de usuario, rutas con tu nombre, claves)."
+  - type: input
+    id: version
+    attributes:
+      label: Versión de Revix PC
+      description: Está abajo a la izquierda en la app
+      placeholder: "4.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows
+      options: [Windows 11, Windows 10]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué pasó
+      description: Qué hiciste, qué esperabas y qué pasó. Si puedes, agrega una captura.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Registro de errores (opcional)
+      description: "Contenido de %TEMP%\\RevixPC-error.log (revísalo antes de pegarlo)"
+      render: text
