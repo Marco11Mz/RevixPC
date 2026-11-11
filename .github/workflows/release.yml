@@ -1,0 +1,115 @@
+# Arma el instalador (RevixPC-Setup-x.y.z.exe) y la versión portátil (.zip).
+# - Al publicar una release en GitHub: adjunta los archivos y agrega las huellas SHA-256 a las notas.
+# - A mano (Actions > Armar Revix PC > Run workflow): solo arma los archivos para probar (quedan en "Artifacts").
+name: Armar Revix PC
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revisar versión y archivos
+        id: ver
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bytes = [IO.File]::ReadAllBytes('RevixPC.ps1')
+          if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { throw 'RevixPC.ps1 tiene que estar guardado en UTF-8 con BOM.' }
+          $txt = [IO.File]::ReadAllText('RevixPC.ps1')
+          $m = [regex]::Match($txt, '\$script:AppVersion\s*=\s*''([0-9]+\.[0-9]+\.[0-9]+)''')
+          if (-not $m.Success) { throw 'No se encontró $script:AppVersion en RevixPC.ps1.' }
+          $v = $m.Groups[1].Value
+          if ('${{ github.event_name }}' -eq 'release') {
+            $tag = '${{ github.event.release.tag_name }}'.TrimStart('v', 'V')
+            if ($tag -ne $v) { throw "La etiqueta (v$tag) no coincide con la versión de RevixPC.ps1 ($v)." }
+          }
+          foreach ($f in 'RevixPC.ico', 'LICENSE', 'README.md', 'CHANGELOG.md') { if (-not (Test-Path $f)) { throw "Falta $f en el repositorio." } }
+          $tokens = $null; $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'RevixPC.ps1'), [ref]$tokens, [ref]$errs)
+          if ($errs.Count -gt 0) { $errs | ForEach-Object { Write-Host "Línea $($_.Extent.StartLineNumber): $($_.Message)" }; throw 'RevixPC.ps1 tiene errores de sintaxis.' }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Versión $v"
+
+      - name: Armar el lanzador (RevixPC.exe)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ steps.ver.outputs.version }}'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          $sma = [System.Management.Automation.PSObject].Assembly.Location
+          $src = Join-Path $env:RUNNER_TEMP 'Launcher.cs'
+          (Get-Content -Raw launcher\Launcher.cs).Replace('"0.0.0.0"', "`"$v.0`"") | Set-Content -Path $src -Encoding UTF8
+          $man = Join-Path $env:RUNNER_TEMP 'app.manifest'
+          (Get-Content -Raw launcher\app.manifest).Replace('version="0.0.0.0"', "version=`"$v.0`"") | Set-Content -Path $man -Encoding UTF8
+          & $csc /nologo /target:winexe /platform:anycpu /optimize+ /out:dist\RevixPC.exe "/win32manifest:$man" /win32icon:RevixPC.ico "/reference:$sma" $src
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path dist\RevixPC.exe)) { throw 'No se pudo compilar el lanzador.' }
+
+      - name: Armar el instalador (Inno Setup)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          if (-not (Test-Path $iscc)) { throw 'No se encontró Inno Setup.' }
+          & $iscc /Qp "/DAppVersion=${{ steps.ver.outputs.version }}" installer\RevixPC.iss
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo armar el instalador.' }
+
+      - name: Armar la versión portátil (.zip)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ steps.ver.outputs.version }}'
+          $tmp = Join-Path $env:RUNNER_TEMP 'portable'
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+          Copy-Item dist\RevixPC.exe, RevixPC.ps1, RevixPC.ico, LICENSE, README.md, CHANGELOG.md -Destination $tmp
+          Compress-Archive -Path (Join-Path $tmp '*') -DestinationPath "dist\RevixPC-Portable-$v.zip" -Force
+
+      - name: Huellas SHA-256
+        shell: powershell
+        run: |
+          $lines = foreach ($f in Get-ChildItem dist -File | Where-Object { $_.Name -ne 'RevixPC.exe' }) {
+            '| {0} | `{1}` |' -f $f.Name, (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+          }
+          $txt = "`n`n### Huellas SHA-256`n`n| Archivo | SHA-256 |`n|---|---|`n" + ($lines -join "`n")
+          Set-Content -Path dist-sha256.md -Value $txt -Encoding UTF8
+          Get-Content dist-sha256.md
+
+      - name: Guardar para probar (solo al correrlo a mano)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RevixPC-${{ steps.ver.outputs.version }}
+          path: |
+            dist/RevixPC-Setup-*.exe
+            dist/RevixPC-Portable-*.zip
+
+      - name: Adjuntar a la release
+        if: github.event_name == 'release'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.event.release.tag_name }}'
+          $files = @(Get-ChildItem dist -File | Where-Object { $_.Name -ne 'RevixPC.exe' } | ForEach-Object { $_.FullName })
+          gh release upload $tag @files --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudieron adjuntar los archivos.' }
+          # Notas tal como se publicaron (se leen del evento para no dañar las tildes)
+          $ev = Get-Content -Raw -Encoding UTF8 $env:GITHUB_EVENT_PATH | ConvertFrom-Json
+          $body = [string]$ev.release.body
+          if ($body -notmatch 'Huellas SHA-256') {
+            $sha = Get-Content -Raw -Encoding UTF8 dist-sha256.md
+            [IO.File]::WriteAllText((Join-Path (Get-Location) 'notes.md'), ($body.TrimEnd() + $sha), (New-Object Text.UTF8Encoding($false)))
+            gh release edit $tag --notes-file notes.md
+            if ($LASTEXITCODE -ne 0) { throw 'No se pudieron actualizar las notas.' }
+          }
