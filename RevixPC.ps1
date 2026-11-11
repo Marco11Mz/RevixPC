@@ -28,20 +28,16 @@ $script:IsAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::A
 $needSta = ([Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')
 if ($needSta -or (-not $script:IsAdmin -and -not $NoElevate)) {
     $launcher = Join-Path $PSScriptRoot 'RevixPC.exe'
-    try {
-        if (Test-Path -LiteralPath $launcher) {
-            $a = @(); if ($Tray) { $a += '-Tray' }
-            if ($a.Count -gt 0) { Start-Process -FilePath $launcher -ArgumentList $a -ErrorAction Stop } else { Start-Process -FilePath $launcher -ErrorAction Stop }
+    if (Test-Path -LiteralPath $launcher) {
+        try {
+            if ($Tray) { Start-Process -FilePath $launcher -ArgumentList '-Tray' -ErrorAction Stop } else { Start-Process -FilePath $launcher -ErrorAction Stop }
             exit
-        }
-        $extra = ''; if ($Tray) { $extra = ' -Tray' }
-        $relaunchArgs = "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`" -NoElevate$extra"
-        if ($script:IsAdmin) { Start-Process $script:PsExe -ArgumentList $relaunchArgs -WindowStyle Minimized -ErrorAction Stop }
-        else { Start-Process $script:PsExe -Verb RunAs -ArgumentList $relaunchArgs -WindowStyle Minimized -ErrorAction Stop }
+        } catch { }   # si no se acepta el aviso de administrador, sigue sin permisos (solo puede escanear)
+    }
+    if ($needSta) {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show('Abre Revix PC con RevixPC.exe.', 'Revix PC')
         exit
-    } catch {
-        # Si la persona no acepta el aviso de administrador, sigue sin permisos (solo puede escanear)
-        if ($needSta) { exit }
     }
 }
 
@@ -792,9 +788,8 @@ $script:JobClean = {
                 'RecycleBin' { Clear-RecycleBin -Force -ErrorAction SilentlyContinue }
                 'Components' { & dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null }
                 'WUDownload' {
-                    Stop-Service wuauserv, bits -Force -ErrorAction SilentlyContinue
+                    # Sin detener servicios: lo que Windows Update esté usando se salta
                     foreach ($p in $c.Paths) { Clear-FolderContent $p }
-                    Start-Service bits, wuauserv -ErrorAction SilentlyContinue
                 }
                 'DeliveryOpt' {
                     try { Delete-DeliveryOptimizationCache -Force -ErrorAction Stop } catch { foreach ($p in $c.Paths) { Clear-FolderContent $p } }
@@ -1103,29 +1098,6 @@ $script:JobCheckAppUpdate = {
     $setup = ''; if ($asset) { $setup = [string]$asset.browser_download_url }
     [pscustomobject]@{ Version = ([string]$r.tag_name).TrimStart([char[]]'vV'); Setup = $setup; Notes = [string]$r.body; Digest = $digest; Page = [string]$r.html_url }
 }
-$script:JobDownload = {
-    param([string]$Url, [string]$Dest, [string]$Digest, [string]$Repo)
-    $ErrorActionPreference = 'Stop'
-    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
-    # Solo se descarga desde las releases oficiales del repositorio
-    $allowed = "https://github.com/$Repo/releases/download/"
-    if (-not $Url.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw "Enlace de descarga no permitido: $Url" }
-    # Sin huella SHA-256 no se instala nada
-    if ($Digest -notmatch '^sha256:([0-9a-fA-F]{64})$') { throw 'GitHub no dio la huella SHA-256 del archivo. No se descargó nada.' }
-    $want = $matches[1]
-    $parent = Split-Path -Parent $Dest
-    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    if (Test-Path -LiteralPath $Dest) { Remove-Item -LiteralPath $Dest -Force }
-    try {
-        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Dest -Headers @{ 'User-Agent' = 'RevixPC' } -TimeoutSec 180
-    } catch { throw "No se pudo descargar: $($_.Exception.Message)" }
-    if (-not (Test-Path -LiteralPath $Dest) -or (Get-Item -LiteralPath $Dest).Length -lt 1024) { throw 'La descarga llegó vacía o incompleta.' }
-    # Comprobar que el archivo es exactamente el publicado (huella SHA-256 que da GitHub)
-    $got = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash
-    if ($got -ne $want) { Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue; throw 'El archivo descargado no coincide con el publicado (huella SHA-256 distinta). No se instaló nada.' }
-    $Dest
-}
-
 # ===================================================================
 #  Logica: clasificar actualizaciones, dispositivos y salud
 # ===================================================================
@@ -2714,6 +2686,12 @@ try {
     })
     $script:Timer.Start()
 
+    # Reinicio normal de Windows (sin forzar: los programas abiertos pueden pedir guardar)
+    function Request-Restart {
+        try { Restart-Computer -ErrorAction Stop }
+        catch { Show-Msg "Windows no pudo reiniciar ahora:`n$($_.Exception.Message)`n`nReinicia desde el menú Inicio." 'Warning' | Out-Null }
+    }
+
     # ---------- Tareas (pestaña Progreso) ----------
     function Add-TaskRow([string]$key, [string]$name) {
         $t = New-Object RevixPC.TaskItem
@@ -3110,7 +3088,7 @@ try {
             $script:TaskHeader.Text = $msg
             if ($script:WUReboot) {
                 $ans = Show-Msg "$msg.`n`nWindows necesita reiniciar para terminar. Guarda tu trabajo. ¿Reiniciar ahora?" 'Question' 'YesNo'
-                if ($ans -eq 'Yes') { Restart-Computer -Force }
+                if ($ans -eq 'Yes') { Request-Restart }
             } elseif (-not $script:Window.IsVisible) { Show-Notify 'Windows Update terminado' $msg }
             Scan-WU; Scan-Health
         } {
@@ -3809,7 +3787,7 @@ try {
         elseif ($t -eq 'reboot') {
             if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Espera a que termine la tarea actual (mira la pestaña Progreso).' | Out-Null; return }
             $ans = Show-Msg 'Se reiniciará la PC para terminar de instalar las actualizaciones. Guarda tu trabajo y cierra tus programas. ¿Reiniciar ahora?' 'Question' 'YesNo'
-            if ($ans -eq 'Yes') { Add-History 'Reiniciar PC' 'Para terminar actualizaciones de Windows'; Restart-Computer -Force }
+            if ($ans -eq 'Yes') { Add-History 'Reiniciar PC' 'Para terminar actualizaciones de Windows'; Request-Restart }
         }
         elseif ($t -match '^https://') { Start-Process $t }
     })
@@ -4038,18 +4016,6 @@ try {
         if ($t.Length -gt 1200) { $t = $t.Substring(0, 1200) + '...' }
         return $t
     }
-    # Ejecuta el instalador nuevo (ya verificado) y cierra la app; el instalador la vuelve a abrir
-    function Start-SetupUpdate([string]$setup, [string]$version, [string]$notes) {
-        try {
-            $script:Config.UpdateNotes = $notes; Save-Config
-            Add-History 'Actualizar Revix PC' "$($script:AppVersion) -> $version"
-            Start-Process -FilePath $setup -ArgumentList '/SILENT', '/NORESTART', '/UPDATE' -ErrorAction Stop
-            Exit-App
-        } catch {
-            Write-ErrorLog "actualizar app: $_"
-            Show-Msg "No se pudo abrir el instalador:`n$($_.Exception.Message)" 'Warning' | Out-Null
-        }
-    }
     function Check-AppUpdate([bool]$quiet) {
         $script:AppUpdQuiet = $quiet
         [void](Start-Bg 'AppUpd' 'Buscando nueva versión de Revix PC' $script:JobCheckAppUpdate @($script:GitHubRepo) {
@@ -4071,30 +4037,12 @@ try {
         $notes = ConvertTo-PlainNotes $r.Notes
         $txt = "Hay una versión nueva de Revix PC: $($r.Version) (tienes la $($script:AppVersion))."
         if ($notes) { $txt += "`n`nNovedades:`n$notes" }
-        $why = ''
-        if (-not (Test-RunningInstalled)) { $why = 'Estás usando una copia portátil, así que se actualiza a mano.' }
-        elseif (-not $r.Setup) { $why = 'Esta versión no trae instalador para actualizar automáticamente.' }
-        elseif ($r.Digest -notmatch '^sha256:[0-9a-fA-F]{64}$') { $why = 'GitHub no dio la huella SHA-256 del instalador, así que no se puede comprobar.' }
-        if ($why) {
-            $txt += "`n`n$why ¿Abrir la página de descarga?"
-            if ((Show-Msg $txt 'Question' 'YesNo') -eq 'Yes' -and $r.Page -match '^https://github\.com/') { Start-Process $r.Page }
-            return
+        $txt += "`n`nDescarga el instalador desde la página oficial de Revix PC en GitHub y ábrelo: se actualiza sin perder tus ajustes. ¿Abrir la página?"
+        if ((Show-Msg $txt 'Question' 'YesNo') -eq 'Yes') {
+            $page = [string]$r.Page
+            if ($page -notmatch '^https://github\.com/Marco11Mz/RevixPC/') { $page = "$($script:GitHubUrl)/releases/latest" }
+            Start-Process $page
         }
-        if (Test-AnyRunning $script:WorkKinds) { Show-Msg "$txt`n`nHay una tarea en curso (mira Progreso). Cuando termine, búscala otra vez en Ajustes > Buscar nueva versión ahora." | Out-Null; return }
-        $ans = Show-Msg "$txt`n`n¿Descargar e instalar ahora? Revix PC se cerrará y se abrirá sola al terminar." 'Question' 'YesNo'
-        if ($ans -ne 'Yes') { return }
-        $script:DownloadNotes = $notes
-        $script:DownloadVersion = [string]$r.Version
-        $dir = Join-Path $env:TEMP ('RevixPC-upd-' + [guid]::NewGuid().ToString('N'))
-        $dest = Join-Path $dir ("RevixPC-Setup-$($r.Version).exe")
-        [void](Start-Bg 'AppDl' 'Descargando Revix PC' $script:JobDownload @([string]$r.Setup, $dest, [string]$r.Digest, $script:GitHubRepo) {
-            param($out2, $err2)
-            if ($err2) { Show-Msg "No se pudo descargar:`n$err2" 'Warning' | Out-Null; return }
-            $setup = [string]($out2 | Select-Object -Last 1)
-            if (-not $setup -or -not (Test-Path -LiteralPath $setup)) { Show-Msg 'La descarga no se completó. Intenta de nuevo en unos minutos.' 'Warning' | Out-Null; return }
-            if (Test-AnyRunning $script:WorkKinds) { Show-Msg 'Hay una tarea en curso. Cuando termine, busca otra vez la versión nueva en Ajustes.' | Out-Null; return }
-            Start-SetupUpdate $setup $script:DownloadVersion $script:DownloadNotes
-        })
     }
     $script:BtnCheckAppUpdate.Add_Click({ Check-AppUpdate $false })
 

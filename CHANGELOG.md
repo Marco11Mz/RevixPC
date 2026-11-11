@@ -12,8 +12,10 @@ Formato: Nuevo / Mejorado / Corregido. Versiones con [versionado semántico](htt
 - Windows Update: si una actualización falló antes, se muestra junto a ella con la fecha y el código del error.
 
 ### Mejorado
-- Las versiones nuevas de Revix PC se instalan con el instalador. Antes de abrirlo se comprueba que venga de la página oficial y que su huella SHA-256 sea la publicada (si GitHub no da la huella, no se instala nada).
-- `RevixPC.exe` abre la app dentro del mismo proceso, sin ventanas ocultas de PowerShell. Menos motivos para que un antivirus la confunda.
+- Cuando hay una versión nueva, Revix PC muestra las novedades y abre la página oficial para descargar el instalador (ya no descarga ni ejecuta archivos por su cuenta).
+- La limpieza de "Descargas de Windows Update" ya no detiene servicios de Windows; lo que esté en uso se salta.
+- "Reiniciar" usa el reinicio normal de Windows (los programas abiertos pueden pedirte guardar).
+- `RevixPC.exe` abre la app dentro del mismo proceso, sin ventanas ocultas de PowerShell ni `-ExecutionPolicy Bypass`. Menos motivos para que un antivirus la confunda.
 - La app ya no compila nada en tu PC ni usa comandos de consola para desinstalarse (ahora lo hace el instalador).
 - Las notas de cada versión incluyen las huellas SHA-256 de los archivos.
 

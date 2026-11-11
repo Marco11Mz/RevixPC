@@ -23,9 +23,9 @@ Revisa y actualiza tu PC con Windows 10 y 11 desde un solo lugar: programas, Win
 2. Ábrelo, acepta el aviso de administrador y sigue los pasos.
 3. Abre Revix PC desde el Escritorio o el menú Inicio.
 
-Las versiones nuevas se instalan desde la misma app (Ajustes > Buscar nueva versión ahora). Antes de instalar, Revix PC comprueba que el archivo venga de esta página y que su huella SHA-256 sea la publicada.
+Cuando sale una versión nueva, Revix PC te avisa y abre esta página: descarga el nuevo `RevixPC-Setup` y ábrelo (tus ajustes se mantienen).
 
-**Versión portátil** (sin instalar): descarga `RevixPC-Portable-x.y.z.zip`, descomprímelo y abre `RevixPC.exe`. No inicia con Windows ni se actualiza sola.
+**Versión portátil** (sin instalar): descarga `RevixPC-Portable-x.y.z.zip`, descomprímelo y abre `RevixPC.exe`. No inicia con Windows.
 
 Para desinstalar: **Configuración > Aplicaciones > Revix PC** (o Ajustes > Avanzado dentro de la app).
 
