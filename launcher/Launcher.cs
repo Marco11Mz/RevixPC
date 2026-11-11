@@ -33,6 +33,9 @@ static class Launcher
         MessageBoxW(IntPtr.Zero, text, "Revix PC", 0x10);
     }
 
+    // Español si Windows está en español; si no, inglés
+    static bool Es { get { try { return System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "es"; } catch { return false; } } }
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -40,7 +43,8 @@ static class Launcher
         string script = Path.Combine(dir, "RevixPC.ps1");
         if (!File.Exists(script))
         {
-            ShowError("No se encontró RevixPC.ps1 junto a RevixPC.exe.\n\nVuelve a instalar Revix PC con el instalador.");
+            ShowError(Es ? "No se encontró RevixPC.ps1 junto a RevixPC.exe.\n\nVuelve a instalar Revix PC con el instalador."
+                         : "RevixPC.ps1 was not found next to RevixPC.exe.\n\nReinstall Revix PC with the installer.");
             return 1;
         }
         bool tray = false;
@@ -83,7 +87,7 @@ static class Launcher
         }
         catch (Exception ex)
         {
-            ShowError("Revix PC no pudo abrir:\n\n" + ex.Message);
+            ShowError((Es ? "Revix PC no pudo abrir:\n\n" : "Revix PC could not open:\n\n") + ex.Message);
             return 1;
         }
     }
